@@ -1,15 +1,19 @@
+ {-# LANGUAGE OverloadedStrings #-}
+
 import              Control.Arrow
 import              Control.Exception
 import              Control.Monad.Reader
 import              Data.List
--- import              Data.Text.Internal
+import              Data.Text.Internal
 import              Network
 import              System.Exit
 import              System.IO
 import              Text.Printf
 import              Text.Regex.Posix
 
--- import qualified    GitHub as G
+import              GitHub.Data.Name as G
+import              GitHub.Data.Id as G
+import qualified    GitHub.Endpoints.Issues as G
 -- import qualified    GitHub.Issues as GI
 
 
@@ -89,7 +93,10 @@ eval sender target msg
     | "!echo " `isPrefixOf` msg = privMsg target $ drop 6 msg
     | msg =~ regex = do
         let str = regSearch msg
-        privMsg target $ "https://github.com/TokTok/" ++ (takeWhile (/= '#') str) ++ "/pull/" ++ (drop 1 (dropWhile (/= '#') str))
+        let repo = (takeWhile (/= '#') str)
+        let issnum = (drop 1 (dropWhile (/= '#') str))
+        let url = checkIssue repo (fromEnum issnum)
+        privMsg target $ "https://github.com/TokTok/" ++ repo ++ "/pull/" ++ issnum
         io (putStrLn str)
     | otherwise = return ()
 
@@ -108,16 +115,13 @@ write string text = do
 io :: IO a -> Net a
 io = liftIO
 
--- checkIssue :: String -> Int -> String
--- checkIssue repo num = do
---     possibleIssue <- G.issueR (G.mkOwnerName "TokTok") (G.mkRepoName repo) (G.mkId num)
---     putStrLn $ show $ formatIssue possibleIssue
---     show $ formatIssue possibleIssue
+checkIssue :: String -> Int -> IO String
+checkIssue repo num = do
+    let rep = repo
+    possibleIssue <- G.issue "TokTok" rep (G.Id num)
+    let out = ( either (\e -> "Error: " ++ show e) formatIssue possibleIssue)
+    putStrLn out
+    return (out)
 
--- formatIssue issue = G.issueUrl issue
-
---     -- " opened this issue " ++
---     -- (show $ GitHub.issueCreatedAt issue) ++ "\n" ++
---     -- (GitHub.issueState issue) ++ " with " ++
---     -- (show $ GitHub.issueComments issue) ++ " comments" ++ "\n\n" ++
---     -- (GitHub.issueTitle issue)
+-- formatIssue ::
+formatIssue issue = "issue: " ++ (show $ G.issueUrl issue)
