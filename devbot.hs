@@ -85,6 +85,12 @@ listen h = forever $ do
     ping x    = "PING :" `isPrefixOf` x
     pong x    = write "PONG" $ ':' : drop 6 x
 
+write :: String -> String -> Net ()
+write string text = do
+    io $ printf    "> %s %s\n" string text
+    h <- asks socket
+    io $ hPrintf h "%s %s\r\n" string text
+
 eval :: String -> String -> String -> Net ()
 eval sender target "!die" = do
     privMsg target "Sure, I'll just DIE then!"
@@ -92,36 +98,22 @@ eval sender target "!die" = do
 eval sender target msg
     | "!echo " `isPrefixOf` msg = privMsg target $ drop 6 msg
     | msg =~ regex = do
-        let str = regSearch msg
-        let repo = (takeWhile (/= '#') str)
-        let issnum = (drop 1 (dropWhile (/= '#') str))
-        url <- io $ checkIssue (takeWhile (/= '#') str) (read issnum)
-        privMsg target $ "default msg :: https://github.com/TokTok/" ++ repo ++ "/pull/" ++ issnum
+        url <- io $ checkIssue msg
         privMsg target url
     | otherwise = return ()
-
-regSearch :: String -> String
-regSearch msg = msg =~ regex
 
 privMsg :: String -> String -> Net ()
 privMsg to text = write "PRIVMSG" $ to ++ " :" ++ text
 
-write :: String -> String -> Net ()
-write string text = do
-    io $ printf    "> %s %s\n" string text
-    h <- asks socket
-    io $ hPrintf h "%s %s\r\n" string text
-
-
-checkIssue :: String -> Int -> IO String
-checkIssue repo num = do
-    let rep = repo
-    possibleIssue <- G.issue "TokTok" (G.mkRepoName (P.pack rep)) (G.Id num)
-    let out = ( either (\e -> "Error: " ++ show e) formatIssue possibleIssue)
-    return (out)
-
--- formatIssue ::
-formatIssue issue = "issue: " ++ (show $ G.issueUrl issue)
+checkIssue :: String -> IO String
+checkIssue msg = do
+    let tag = msg =~ regex -- Find supported tags
+    let repo_name = (takeWhile (/= '#') tag)
+    let issu_numb = read (drop 1 (dropWhile (/= '#') tag))
+    possibleIssue <- G.issue "TokTok" (G.mkRepoName (P.pack repo_name)) (G.Id issu_numb)
+    case possibleIssue of
+        Left  err -> return (show err)
+        Right url -> return (show $ G.issueHtmlUrl url)
 
 io :: IO a -> Net a
 io = liftIO
