@@ -95,18 +95,13 @@ eval sender target msg
         let str = regSearch msg
         let repo = (takeWhile (/= '#') str)
         let issnum = (drop 1 (dropWhile (/= '#') str))
-        let url = tagSearch (takeWhile (/= '#') str) (read issnum)
+        url <- io $ checkIssue (takeWhile (/= '#') str) (read issnum)
         privMsg target $ "default msg :: https://github.com/TokTok/" ++ repo ++ "/pull/" ++ issnum
         privMsg target url
     | otherwise = return ()
 
 regSearch :: String -> String
 regSearch msg = msg =~ regex
-
-tagSearch :: String -> Int -> String
-tagSearch repo int = do
-    let url = show $ checkIssue repo int
-    return (url)
 
 privMsg :: String -> String -> Net ()
 privMsg to text = write "PRIVMSG" $ to ++ " :" ++ text
@@ -117,17 +112,16 @@ write string text = do
     h <- asks socket
     io $ hPrintf h "%s %s\r\n" string text
 
-io :: IO a -> Net a
-io = liftIO
 
 checkIssue :: String -> Int -> IO String
 checkIssue repo num = do
     let rep = repo
     possibleIssue <- G.issue "TokTok" (G.mkRepoName (P.pack rep)) (G.Id num)
     let out = ( either (\e -> "Error: " ++ show e) formatIssue possibleIssue)
-    putStrLn "this is a problem "
-    putStrLn out
     return (out)
 
 -- formatIssue ::
 formatIssue issue = "issue: " ++ (show $ G.issueUrl issue)
+
+io :: IO a -> Net a
+io = liftIO
