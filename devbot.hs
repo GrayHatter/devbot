@@ -4,6 +4,7 @@ import              Control.Arrow
 import              Control.Exception
 import              Control.Monad.Reader
 import              Data.List
+import qualified    Data.Vector as V
 import              Data.Maybe
 import qualified    Data.Text as P
 import              Network
@@ -101,12 +102,18 @@ eval sender target msg
     | msg =~ regex = do
         url <- io $ checkIssue msg
         if isJust url
-            then privMsg target $ takeWhile (/= '"') . drop 1 $ fromJust url
+            then privMsg target $ fromJust url
             else return ()
     | otherwise = return ()
 
 privMsg :: String -> String -> Net ()
 privMsg to text = write "PRIVMSG" $ to ++ " :" ++ text
+
+parseAssigned :: G.Issue -> IO [String]
+parseAssigned issue = do
+    let assigned = V.toList $ G.issueAssignees issue
+    let names = map (P.unpack . G.untagName . G.simpleUserLogin) assigned
+    return (names)
 
 checkIssue :: String -> IO (Maybe String)
 checkIssue msg = do
@@ -116,7 +123,12 @@ checkIssue msg = do
     possibleIssue <- G.issue "TokTok" (G.mkRepoName (P.pack repo_name)) (G.Id issu_numb)
     case possibleIssue of
         Left  err -> return (Nothing)
-        Right url -> return (Just (show $ G.getUrl $ fromJust $ G.issueHtmlUrl url))
+        Right real_issue -> do
+            users <- parseAssigned real_issue
+            let user = (intercalate " " users)
+            let url  = (P.unpack . G.getUrl $ fromJust $ G.issueHtmlUrl real_issue)
+            let str  = url ++ " Assigned to: " ++ user
+            return (Just str)
 
 io :: IO a -> Net a
 io = liftIO
