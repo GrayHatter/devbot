@@ -4,7 +4,7 @@ import              Control.Arrow
 import              Control.Exception
 import              Control.Monad.Reader
 import              Data.List
-import              Data.Text.Internal
+import qualified    Data.Text as P
 import              Network
 import              System.Exit
 import              System.IO
@@ -95,9 +95,9 @@ eval sender target msg
         let str = regSearch msg
         let repo = (takeWhile (/= '#') str)
         let issnum = (drop 1 (dropWhile (/= '#') str))
-        let url = checkIssue repo (fromEnum issnum)
+        let url = checkIssue repo (read issnum)
         privMsg target $ "https://github.com/TokTok/" ++ repo ++ "/pull/" ++ issnum
-        io (putStrLn str)
+        privMsg target (io url)
     | otherwise = return ()
 
 regSearch :: String -> String
@@ -118,8 +118,9 @@ io = liftIO
 checkIssue :: String -> Int -> IO String
 checkIssue repo num = do
     let rep = repo
-    possibleIssue <- G.issue "TokTok" rep (G.Id num)
+    possibleIssue <- G.issue "TokTok" (G.mkRepoName (P.pack rep)) (G.Id num)
     let out = ( either (\e -> "Error: " ++ show e) formatIssue possibleIssue)
+    putStrLn "this is a problem "
     putStrLn out
     return (out)
 
