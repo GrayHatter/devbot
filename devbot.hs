@@ -95,13 +95,18 @@ eval sender target msg
         let str = regSearch msg
         let repo = (takeWhile (/= '#') str)
         let issnum = (drop 1 (dropWhile (/= '#') str))
-        let url = checkIssue repo (read issnum)
-        privMsg target $ "https://github.com/TokTok/" ++ repo ++ "/pull/" ++ issnum
-        privMsg target (io url)
+        let url = tagSearch (takeWhile (/= '#') str) (read issnum)
+        privMsg target $ "default msg :: https://github.com/TokTok/" ++ repo ++ "/pull/" ++ issnum
+        privMsg target url
     | otherwise = return ()
 
 regSearch :: String -> String
 regSearch msg = msg =~ regex
+
+tagSearch :: String -> Int -> String
+tagSearch repo int = do
+    let url = show $ checkIssue repo int
+    return (url)
 
 privMsg :: String -> String -> Net ()
 privMsg to text = write "PRIVMSG" $ to ++ " :" ++ text
