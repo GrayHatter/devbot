@@ -4,6 +4,7 @@ import              Control.Arrow
 import              Control.Exception
 import              Control.Monad.Reader
 import              Data.List
+import              Data.Maybe
 import qualified    Data.Text as P
 import              Network
 import              System.Exit
@@ -99,21 +100,23 @@ eval sender target msg
     | "!echo " `isPrefixOf` msg = privMsg target $ drop 6 msg
     | msg =~ regex = do
         url <- io $ checkIssue msg
-        privMsg target url
+        if isJust url
+            then privMsg target $ takeWhile (/= '"') . drop 1 $ fromJust url
+            else return ()
     | otherwise = return ()
 
 privMsg :: String -> String -> Net ()
 privMsg to text = write "PRIVMSG" $ to ++ " :" ++ text
 
-checkIssue :: String -> IO String
+checkIssue :: String -> IO (Maybe String)
 checkIssue msg = do
     let tag = msg =~ regex -- Find supported tags
     let repo_name = (takeWhile (/= '#') tag)
     let issu_numb = read (drop 1 (dropWhile (/= '#') tag))
     possibleIssue <- G.issue "TokTok" (G.mkRepoName (P.pack repo_name)) (G.Id issu_numb)
     case possibleIssue of
-        Left  err -> return (show err)
-        Right url -> return (show $ G.issueHtmlUrl url)
+        Left  err -> return (Nothing)
+        Right url -> return (Just (show $ G.getUrl $ fromJust $ G.issueHtmlUrl url))
 
 io :: IO a -> Net a
 io = liftIO
