@@ -147,7 +147,7 @@ githubShort url pre str = do
 nextMileStone :: String -> String -> IO (String)
 nextMileStone pre _ = do
     -- get from github
-    str <- githubShort "https://github.com/TokTok/c-toxcore/milestone/11" "TokTok" "-v0.0.5"
+    str <- githubShort "https://github.com/TokTok/c-toxcore/milestone/11" pre "-v0.0.5"
     if isJust str
         then return $ fromJust str
         else return "Error getting milestone... Sorry about that"
