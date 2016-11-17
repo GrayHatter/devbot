@@ -21,6 +21,9 @@ import              Text.Regex.Posix
 
 import              GitHub.Data.Name as G
 import              GitHub.Data.Id as G
+import              GitHub.Data.URL as G
+import              GitHub.Data.Milestone as G
+import qualified    GitHub.Endpoints.Issues.Milestones as G
 import qualified    GitHub.Endpoints.Issues as G
 -- import qualified    GitHub.Issues as GI
 
@@ -84,11 +87,11 @@ listen h = forever $ do
     io $ putStrLn string
     if ping string
         then pong string
-        else eval (sender string) (target string) (message string)
+        else eval (source string) (target string) (message string)
   where
     forever a = do a; forever a
 
-    sender  = takeWhile (/= ' ') . drop 1
+    source  = takeWhile (/= ' ') . drop 1
     target  = takeWhile (/= ' ') . dropWhile (/= '#')
     message = drop 1 . dropWhile (/= ':') . drop 1
 
@@ -102,15 +105,15 @@ write string text = do
     io $ hPrintf h "%s %s\r\n" string text
 
 eval :: String -> String -> String -> Net ()
-eval sender target "!die" = do
+eval source target "!die" = do
     privMsg target "Sure, I'll just DIE then!"
     write "QUIT" ":My death was ordered" >> io (exitWith ExitSuccess)
-eval sender target "!m" = do
-    text <- io (nextMileStone "TokTok" "Maybe target milestone")
-    privMsg target text
-eval sender target "!status iphy" = do
+eval source target "!m" = do
+    text <- io (nextMilestone "TokTok" "c-toxcore")
+    privMsg target $ text ++ "  ||  https://reviewable.io/reviews#q=v0.0.5"
+eval source target "!status iphy" = do
     privMsg target "iphy's current status :: https://img.shields.io/badge/iphy-savage-red.svg"
-eval sender target msg
+eval source target msg
     | "!echo " `isPrefixOf` msg = privMsg target $ drop 6 msg
     | msg =~ regex = do
         url <- io $ checkIssue msg
@@ -119,39 +122,38 @@ eval sender target msg
             else return ()
     | otherwise = return ()
 
+
 privMsg :: String -> String -> Net ()
 privMsg to text = write "PRIVMSG" $ to ++ " :" ++ text
 
-githubToIRC :: String -> String
-githubToIRC x = x
+------------------------------------------------
+--  Milestones
+------------------------------------------------
+nextMilestone :: String -> String -> IO (String)
+nextMilestone group repo = do
+    list <- G.milestones (G.mkOwnerName $ P.pack group) (G.mkRepoName $ P.pack repo)
+    case list of
+        (Left err) -> return $ "Error: " ++ show err
+        (Right milestones) -> return (parseMilestone (milestonesToNext (V.toList milestones)) group)
 
-githubShort :: String -> String -> String -> IO (Maybe String)
-githubShort url pre str = do
-    manager <- newManager tlsManagerSettings
-    let requestText = [  ("url", CHAR8.pack url)
-                      ,  ("code", CHAR8.pack (pre ++ str))
-                      ]
-    initRequest <- parseRequest "https://git.io"
-    let request = urlEncodedBody requestText $ initRequest { method = "POST" }
-    response <- httpLbs request manager
-    putStrLn $ LCHAR8.unpack (responseBody response)
-    putStrLn $ "The status code was: " ++ (show $ statusCode $ responseStatus response)
+milestonesToNext :: [G.Milestone] -> G.Milestone
+milestonesToNext mList = do
+    head $ filter (\x -> "open" == (G.milestoneState x)) mList
 
-    let headers = responseHeaders response
-    let res = (lookup "location" headers)
-    if isJust res
-        then return (Just $ CHAR8.unpack $ fromJust res)
-        else return (Nothing)
-
-
-nextMileStone :: String -> String -> IO (String)
-nextMileStone pre _ = do
-    -- get from github
-    str <- githubShort "https://github.com/TokTok/c-toxcore/milestone/11" pre "-v0.0.5"
+parseMilestone :: G.Milestone -> String -> String
+parseMilestone miles group = do
+    let name = (group ++ (P.unpack (G.milestoneTitle miles)))
+    let url  = P.unpack $ G.getUrl $ G.milestoneUrl miles
+    -- Try to make it small
+    str <- liftIO $ githubMkShort url (group ++ name)
     if isJust str
-        then return $ fromJust str
-        else return "Error getting milestone... Sorry about that"
+        then return (fromJust str)
+        else return (show url)
 
+
+------------------------------------------------
+--  Issues
+------------------------------------------------
 parseAssigned :: G.Issue -> IO [String]
 parseAssigned issue = do
     let assigned = V.toList $ G.issueAssignees issue
@@ -173,6 +175,32 @@ checkIssue msg = do
             let title = (P.unpack $ G.issueTitle real_issue)
             let str  = url ++ " " ++ title ++ " (Assigned to: " ++ user ++ ")"
             return (Just str)
+
+
+
+------------------------------------------------
+--  GitHub helpers
+------------------------------------------------
+githubToIRC :: String -> String
+githubToIRC x = x
+
+githubMkShort :: String -> String -> IO (Maybe String)
+githubMkShort url str = do
+    manager <- newManager tlsManagerSettings
+    let requestText = [  ("url", CHAR8.pack url)
+                      ,  ("code", CHAR8.pack str)
+                      ]
+    initRequest <- parseRequest "https://git.io"
+    let request = urlEncodedBody requestText $ initRequest { method = "POST" }
+    response <- httpLbs request manager
+    putStrLn $ LCHAR8.unpack (responseBody response)
+    putStrLn $ "The status code was: " ++ (show $ statusCode $ responseStatus response)
+
+    let headers = responseHeaders response
+    let res = (lookup "location" headers)
+    if isJust res
+        then return (Just $ CHAR8.unpack $ fromJust res)
+        else return (Nothing)
 
 io :: IO a -> Net a
 io = liftIO
