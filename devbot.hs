@@ -109,7 +109,7 @@ eval source target "!die" = do
     privMsg target "Sure, I'll just DIE then!"
     write "QUIT" ":My death was ordered" >> io (exitWith ExitSuccess)
 eval source target "!m" = do
-    text <- io (nextMilestone "TokTok" "c-toxcore")
+    text <- io $ nextMilestone "TokTok" "c-toxcore"
     privMsg target $ text ++ "  ||  https://reviewable.io/reviews#q=v0.0.5"
 eval source target "!status iphy" = do
     privMsg target "iphy's current status :: https://img.shields.io/badge/iphy-savage-red.svg"
@@ -134,21 +134,19 @@ nextMilestone group repo = do
     list <- G.milestones (G.mkOwnerName $ P.pack group) (G.mkRepoName $ P.pack repo)
     case list of
         (Left err) -> return $ "Error: " ++ show err
-        (Right milestones) -> return (parseMilestone (milestonesToNext (V.toList milestones)) group)
+        (Right milestones) -> parseMilestone (milestonesToNext (V.toList milestones)) group
 
 milestonesToNext :: [G.Milestone] -> G.Milestone
 milestonesToNext mList = do
     head $ filter (\x -> "open" == (G.milestoneState x)) mList
 
-parseMilestone :: G.Milestone -> String -> String
+parseMilestone :: G.Milestone -> String -> IO (String)
 parseMilestone miles group = do
-    let name = (group ++ (P.unpack (G.milestoneTitle miles)))
-    let url  = P.unpack $ G.getUrl $ G.milestoneUrl miles
+    let name = (group ++ "-" ++ (P.unpack (G.milestoneTitle miles)))
+    let url  = P.unpack $ G.getUrl $ G.milestoneHtmlUrl miles
     -- Try to make it small
-    str <- liftIO $ githubMkShort url (group ++ name)
-    if isJust str
-        then return (fromJust str)
-        else return (show url)
+    str <- githubMkShort url (name)
+    return $ fromMaybe (show url) str
 
 
 ------------------------------------------------
@@ -193,12 +191,13 @@ githubMkShort url str = do
     initRequest <- parseRequest "https://git.io"
     let request = urlEncodedBody requestText $ initRequest { method = "POST" }
     response <- httpLbs request manager
+    let code = statusCode $ responseStatus response
     putStrLn $ LCHAR8.unpack (responseBody response)
-    putStrLn $ "The status code was: " ++ (show $ statusCode $ responseStatus response)
+    putStrLn $ "The status code was: " ++ (show code)
 
     let headers = responseHeaders response
     let res = (lookup "location" headers)
-    if isJust res
+    if isJust res || code == 422
         then return (Just $ CHAR8.unpack $ fromJust res)
         else return (Nothing)
 
