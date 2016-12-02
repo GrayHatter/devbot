@@ -1,8 +1,9 @@
  {-# LANGUAGE OverloadedStrings #-}
 
-import              Control.Arrow
+-- import              Control.Arrow
 import              Control.Exception
 import              Control.Monad.Reader
+import              Text.Printf
 import              Data.List
 import qualified    Data.Vector as V
 import              Data.Maybe
@@ -13,7 +14,7 @@ import              Network
 import              Network.HTTP.Client
 import              Network.HTTP.Client.TLS
 import              Network.HTTP.Types.Status (statusCode)
-import              Data.Aeson (object, (.=), encode)
+-- import              Data.Aeson (object, (.=), encode)
 import              System.Exit
 import              System.IO
 import              Text.Printf
@@ -33,12 +34,15 @@ server  = "irc.freenode.org"
 port    = 6667
 chans   =   [   "#toktok"
             ,   "#toktok-status"
+            ,   "#utox"
             ]
 
 enabled_repos = [   "toxcore"
                 ,   "py-toxcore-c"
                 ,   "hs-toxcore"
                 ,   "website"
+                ,   "github-tools"
+                ,   "utox"
                 ]
 
 regex = "(" ++ (intercalate "|" enabled_repos) ++ ")#([0-9]+)"
@@ -55,8 +59,9 @@ data User = User
     ,   host :: String
     }
 
--- urlSortener :: TODO
-
+------------------------------------------------
+--  IRC connection and logic
+------------------------------------------------
 main :: IO ()
 main = bracket connect disconnect loop
   where
@@ -197,9 +202,11 @@ githubMkShort url str = do
 
     let headers = responseHeaders response
     let res = (lookup "location" headers)
-    if isJust res || code == 422
+    if isJust res
         then return (Just $ CHAR8.unpack $ fromJust res)
-        else return (Nothing)
+        else if code == 422
+            then return (Just $ "https://git.io/" ++ str)
+            else return (Nothing)
 
 io :: IO a -> Net a
 io = liftIO
