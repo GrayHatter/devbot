@@ -109,19 +109,22 @@ write string text = do
     h <- asks socket
     io $ hPrintf h "%s %s\r\n" string text
 
+------------------------------------------------
+--  Main processor
+------------------------------------------------
 eval :: String -> String -> String -> Net ()
 eval source target "!die" = do
     privMsg target "Sure, I'll just DIE then!"
     write "QUIT" ":My death was ordered" >> io (exitWith ExitSuccess)
 eval source target "!m" = do
     text <- io $ nextMilestone "TokTok" "c-toxcore"
-    privMsg target $ text ++ "  ||  https://reviewable.io/reviews#q=v0.0.5"
+    privMsg target $ text
 eval source target "!status iphy" = do
     privMsg target "iphy's current status :: https://img.shields.io/badge/iphy-savage-red.svg"
 eval source target msg
     | "!echo " `isPrefixOf` msg = privMsg target $ drop 6 msg
     | msg =~ regex = do
-        url <- io $ checkIssue msg
+        url <- io $ checkIssue (takeWhile (/= '-') $ drop 1 target) msg
         if isJust url
             then privMsg target $ fromJust url
             else return ()
@@ -147,11 +150,17 @@ milestonesToNext mList = do
 
 parseMilestone :: G.Milestone -> String -> IO (String)
 parseMilestone miles group = do
-    let name = (group ++ "-" ++ (P.unpack (G.milestoneTitle miles)))
-    let url  = P.unpack $ G.getUrl $ G.milestoneHtmlUrl miles
+    let m_tag = P.unpack (G.milestoneTitle miles)
+    let name  = (group ++ "-" ++ m_tag)
+    let url   = P.unpack $ G.getUrl $ G.milestoneHtmlUrl miles
+
+    let open    = G.milestoneOpenIssues miles
+    let closed  = G.milestoneClosedIssues miles
+    let total   = open + closed
+    let percent = (fromIntegral closed) / (fromIntegral total ) :: Float
     -- Try to make it small
     str <- githubMkShort url (name)
-    return $ fromMaybe (show url) str
+    return $ (printf "%f%% Complete (%d of %d) " (percent * 100) closed total :: String) ++ (fromMaybe (show url) str) ++ " || " ++ "https://reviewable.io/reviews#q=" ++ m_tag
 
 
 ------------------------------------------------
@@ -163,12 +172,12 @@ parseAssigned issue = do
     let names = map (githubToIRC . P.unpack . G.untagName . G.simpleUserLogin) assigned
     return (names)
 
-checkIssue :: String -> IO (Maybe String)
-checkIssue msg = do
+checkIssue :: String -> String -> IO (Maybe String)
+checkIssue owner msg = do
     let tag = msg =~ regex -- Find supported tags
     let repo_name = (takeWhile (/= '#') tag)
     let issu_numb = read (drop 1 (dropWhile (/= '#') tag))
-    possibleIssue <- G.issue "TokTok" (G.mkRepoName (P.pack repo_name)) (G.Id issu_numb)
+    possibleIssue <- G.issue (G.mkOwnerName (P.pack owner)) (G.mkRepoName (P.pack repo_name)) (G.Id issu_numb)
     case possibleIssue of
         Left  err -> return (Nothing)
         Right real_issue -> do
@@ -176,9 +185,8 @@ checkIssue msg = do
             let user  = (intercalate " " users)
             let url   = (P.unpack . G.getUrl $ fromJust $ G.issueHtmlUrl real_issue)
             let title = (P.unpack $ G.issueTitle real_issue)
-            let str  = url ++ " " ++ title ++ " (Assigned to: " ++ user ++ ")"
+            let str  = url ++ " " ++ title ++ " (Assigned to: " ++ user ++ ") https://reviewable.io/reviews/" ++ owner ++ "/" ++ repo_name ++ "/" ++ show issu_numb
             return (Just str)
-
 
 
 ------------------------------------------------
