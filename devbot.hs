@@ -1,31 +1,31 @@
- {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE OverloadedStrings #-}
 
 -- import              Control.Arrow
-import              Control.Exception
-import              Control.Monad.Reader
-import              Text.Printf
-import              Data.List
-import qualified    Data.Vector as V
-import              Data.Maybe
-import qualified    Data.Text as P
-import qualified    Data.ByteString.Char8 as CHAR8
-import qualified    Data.ByteString.Lazy.Char8 as LCHAR8
-import              Network
-import              Network.HTTP.Client
-import              Network.HTTP.Client.TLS
-import              Network.HTTP.Types.Status (statusCode)
+import           Control.Exception
+import           Control.Monad.Reader
+import qualified Data.ByteString.Char8              as CHAR8
+import qualified Data.ByteString.Lazy.Char8         as LCHAR8
+import           Data.List
+import           Data.Maybe
+import qualified Data.Text                          as P
+import qualified Data.Vector                        as V
+import           Network
+import           Network.HTTP.Client
+import           Network.HTTP.Client.TLS
+import           Network.HTTP.Types.Status          (statusCode)
+import           Text.Printf
 -- import              Data.Aeson (object, (.=), encode)
-import              System.Exit
-import              System.IO
-import              Text.Printf
-import              Text.Regex.Posix
+import           System.Exit
+import           System.IO
+import           Text.Printf
+import           Text.Regex.Posix
 
-import              GitHub.Data.Name as G
-import              GitHub.Data.Id as G
-import              GitHub.Data.URL as G
-import              GitHub.Data.Milestone as G
-import qualified    GitHub.Endpoints.Issues.Milestones as G
-import qualified    GitHub.Endpoints.Issues as G
+import           GitHub.Data.Id                     as G
+import           GitHub.Data.Milestone              as G
+import           GitHub.Data.Name                   as G
+import           GitHub.Data.URL                    as G
+import qualified GitHub.Endpoints.Issues            as G
+import qualified GitHub.Endpoints.Issues.Milestones as G
 -- import qualified    GitHub.Issues as GI
 
 
@@ -146,7 +146,7 @@ nextMilestone group repo = do
 
 milestonesToNext :: [G.Milestone] -> G.Milestone
 milestonesToNext mList = do
-    head $ filter (\x -> "open" == (G.milestoneState x)) mList
+    head . sortBy G.milestoneDueOn . filter (\x -> "open" == (G.milestoneState x)) $ mList
 
 parseMilestone :: G.Milestone -> String -> IO (String)
 parseMilestone miles group = do
