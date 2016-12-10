@@ -122,6 +122,9 @@ eval source target "!m" = do
 eval source target "!status iphy" = do
     privMsg target "iphy's current status :: https://img.shields.io/badge/iphy-savage-red.svg"
 eval source target msg
+    -- Memes and time wasters
+    | "devbot" `isPrefixOf` msg && "get to work" `isInfixOf` msg = privMsg target "Sir, yes sir!!!"
+    -- Actual work
     | "!echo " `isPrefixOf` msg = privMsg target $ drop 6 msg
     | msg =~ regex = do
         url <- io $ checkIssue (takeWhile (/= '-') $ drop 1 target) msg
