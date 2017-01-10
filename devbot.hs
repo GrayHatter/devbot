@@ -208,7 +208,7 @@ checkIssue owner msg = do
             let user  = (intercalate " " users)
             let url   = (P.unpack . G.getUrl $ fromJust $ G.issueHtmlUrl real_issue)
             let title = (P.unpack $ G.issueTitle real_issue)
-            let str  = url ++ " " ++ title ++ " (Assigned to: " ++ user ++ ") https://reviewable.io/reviews/" ++ owner ++ "/" ++ repo_name ++ "/" ++ show issu_numb
+            let str  = url ++ " " ++ title ++ " (Assigned to: " ++ user ++ ") https://reviewable.io/reviews/" ++ repo_name ++ "/" ++ owner ++ "/" ++ show issu_numb
             return (Just str)
 
 
