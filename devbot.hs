@@ -138,18 +138,33 @@ write string text = do
 --  Main processor
 ------------------------------------------------
 eval :: String -> String -> String -> Net ()
-eval source target "!die" = do
+eval source target "is now your hidden host (set by services.)" = do
+    mapM (write "JOIN") chans
+    return()
+eval _ target "!die" = do
     privMsg target "Sure, I'll just DIE then!"
     write "QUIT" ":My death was ordered" >> io (exitWith ExitSuccess)
-eval source target "!m" = do
-    text <- io $ nextMilestone "TokTok" "c-toxcore"
+eval _ target "!m" = do
+    text <- io $ nextMilestone True "TokTok" "c-toxcore"
     privMsg target $ text
-eval source target "!status iphy" = do
+eval source target "!ms" = eval source target "!milestone"
+eval _ target "!milestone" = do
+    text <- io $ nextMilestone False "TokTok" "c-toxcore"
+    privMsg target $ text
+eval _ target "!status iphy" = do
     privMsg target "iphy's current status :: https://img.shields.io/badge/iphy-savage-red.svg"
 eval source target msg
     -- Memes and time wasters
     | "devbot" `isPrefixOf` msg && "get to work" `isInfixOf` msg = privMsg target "Sir, yes sir!!!"
+    | "devbot is fixed" `isPrefixOf` msg = privMsg target "WELL... maybe SOMEONE, should stop breaking me!"
+    | "devbot you're awesome" `isInfixOf` msg = privMsg target "Awww... I love you too!"
+    | "devbot is awesome" `isInfixOf` msg = privMsg target "Awww... I love you too!"
+    | "that's wrong!" `isInfixOf` msg = privMsg target "OH NO! someone is wrong on the internet! https://xkcd.com/386/"
     -- Actual work
+    | "what's next?" `isInfixOf` msg = eval source target "!ms"
+    | "whats next?" `isInfixOf` msg = eval source target "!ms"
+    | "what's left?" `isInfixOf` msg = eval source target "!ms"
+    | "whats left?" `isInfixOf` msg = eval source target "!ms"
     | "!echo " `isPrefixOf` msg = privMsg target $ drop 6 msg
     | msg =~ regex = do
         url <- io $ checkIssue (takeWhile (/= '-') $ drop 1 target) msg
@@ -165,19 +180,19 @@ privMsg to text = write "PRIVMSG" $ to ++ " :" ++ text
 ------------------------------------------------
 --  Milestones
 ------------------------------------------------
-nextMilestone :: String -> String -> IO (String)
-nextMilestone group repo = do
+nextMilestone :: Bool -> String -> String -> IO (String)
+nextMilestone verbose group repo = do
     list <- G.milestones (G.mkOwnerName $ P.pack group) (G.mkRepoName $ P.pack repo)
     case list of
         (Left err) -> return $ "Error: " ++ show err
-        (Right milestones) -> parseMilestone (milestonesToNext (V.toList milestones)) group
+        (Right milestones) -> parseMilestone verbose (milestonesToNext (V.toList milestones)) group
 
 milestonesToNext :: [G.Milestone] -> G.Milestone
 milestonesToNext mList = do
-    head . sortBy G.milestoneDueOn . filter (\x -> "open" == (G.milestoneState x)) $ mList
+    head . sortOn G.milestoneDueOn . filter (\x -> "open" == (G.milestoneState x)) $ mList
 
-parseMilestone :: G.Milestone -> String -> IO (String)
-parseMilestone miles group = do
+parseMilestone :: Bool -> G.Milestone -> String -> IO (String)
+parseMilestone verbose miles group = do
     let m_tag = P.unpack (G.milestoneTitle miles)
     let name  = (group ++ "-" ++ m_tag)
     let url   = P.unpack $ G.getUrl $ G.milestoneHtmlUrl miles
@@ -186,10 +201,14 @@ parseMilestone miles group = do
     let closed  = G.milestoneClosedIssues miles
     let total   = open + closed
     let percent = (fromIntegral closed) / (fromIntegral total ) :: Float
+    -- now <- getCurrentTime
+    -- let time    = diffUTCTime now $ fromJust $ G.milestoneDueOn miles
+
     -- Try to make it small
     str <- githubMkShort url (name)
-    return $ (printf "%f%% Complete (%d of %d) " (percent * 100) closed total :: String) ++ (fromMaybe (show url) str) ++ " || " ++ "https://reviewable.io/reviews#q=" ++ m_tag
-
+    if verbose
+        then return $ (printf "Milestone %.3f%% (%d of %d) " (percent * 100) closed total :: String) ++ (fromMaybe (show url) str) ++ " || " ++ "https://reviewable.io/reviews#q=" ++ m_tag ++ " || TODO days hours minutes until due"
+        else return $ (printf           "%.0f%% (%d of %d) " (percent * 100) closed total :: String) ++ (fromMaybe (show url) str)
 
 ------------------------------------------------
 --  Issues
@@ -207,14 +226,23 @@ checkIssue owner msg = do
     let issu_numb = read (drop 1 (dropWhile (/= '#') tag))
     possibleIssue <- G.issue (G.mkOwnerName (P.pack owner)) (G.mkRepoName (P.pack repo_name)) (G.Id issu_numb)
     case possibleIssue of
-        Left  err -> return (Nothing)
-        Right real_issue -> do
-            users <- parseAssigned real_issue
-            let user  = (intercalate " " users)
-            let url   = (P.unpack . G.getUrl $ fromJust $ G.issueHtmlUrl real_issue)
-            let title = (P.unpack $ G.issueTitle real_issue)
-            let str  = url ++ " " ++ title ++ " (Assigned to: " ++ user ++ ") https://reviewable.io/reviews/" ++ owner ++ "/" ++ repo_name ++ "/" ++ show issu_numb
-            return (Just str)
+        Left _ -> case owner of
+            "toktok" -> checkIssue "utox"   msg
+            "utox"   -> checkIssue "toktok" msg
+            _        -> return (Nothing)
+        Right real_issue -> realIssue repo_name owner issu_numb real_issue
+
+realIssue :: String -> String -> Int -> G.Issue -> IO (Maybe String)
+realIssue repo_name owner issu_numb issue = do
+    a_users <- parseAssigned issue
+    let a_user = (intercalate " " a_users)
+    let o_user = (P.unpack . G.untagName . G.simpleUserLogin $ G.issueUser  issue)
+    let title  = (P.unpack $ G.issueTitle issue)
+    let url    = (P.unpack . G.getUrl $ fromJust $ G.issueHtmlUrl issue)
+    let str    = url ++ " " ++ title ++ " (Owner: " ++ (githubToIRC o_user) ++ " Assigned to: " ++ a_user ++ ") "
+    if "pull" `isInfixOf` url
+        then return (Just (str ++ "https://reviewable.io/reviews/" ++ owner ++ "/" ++ repo_name ++ "/" ++ show issu_numb))
+        else return (Just str)
 
 
 ------------------------------------------------
