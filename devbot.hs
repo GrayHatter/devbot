@@ -9,6 +9,7 @@ import           Data.List
 import           Data.Maybe
 import qualified Data.Text                          as P
 import qualified Data.Vector                        as V
+-- import           Data.Time.Clock
 import           Network
 import           Network.HTTP.Client
 import           Network.HTTP.Client.TLS
@@ -17,7 +18,6 @@ import           Text.Printf
 -- import              Data.Aeson (object, (.=), encode)
 import           System.Exit
 import           System.IO
-import           Text.Printf
 import           Text.Regex.Posix
 
 import           GitHub.Data.Id                     as G
@@ -29,15 +29,19 @@ import qualified GitHub.Endpoints.Issues.Milestones as G
 -- import qualified    GitHub.Issues as GI
 
 
-ournick = "devbot"
-server  = "irc.freenode.org"
-port    = 6667
+ournick =   "devbot"
+server  =   "irc.freenode.org"
+port    =   6667
 chans   =   [   "#toktok"
             ,   "#toktok-status"
             ,   "#utox"
             ]
 
-enabled_repos = [   "apidsl"
+nick_password = ""
+
+
+enabled_repos = [   -- TokTok repos
+                    "apidsl"
                 ,   "c-toxcore-hs"
                 ,   "dockerfiles"
                 ,   "github-tools"
@@ -53,7 +57,6 @@ enabled_repos = [   "apidsl"
                 ,   "jvm-toxcore-api"
                 ,   "jvm-toxcore-c"
                 ,   "py-toxcore-c"
-                ,   "qTox"
                 ,   "semdoc"
                 ,   "spec"
                 ,   "tokstyle"
@@ -61,8 +64,9 @@ enabled_repos = [   "apidsl"
                 ,   "toktok-stack"
                 ,   "toktok.github.io"
                 ,   "toxcore"
-                ,   "utox"
                 ,   "website"
+                    -- uTox/ repos
+                ,   "utox"
                 ]
 
 regex = "(" ++ (intercalate "|" enabled_repos) ++ ")#([0-9]+)"
@@ -90,7 +94,7 @@ main = bracket connect disconnect loop
 
 connect :: IO Bot
 connect = notify $ do
-    irc_conn <- connectTo server $ PortNumber $ fromIntegral Main.port
+    irc_conn <- connectTo server $ PortNumber $ Main.port
     hSetBuffering irc_conn NoBuffering
     return (Bot irc_conn)
   where
@@ -103,12 +107,13 @@ run :: Net ()
 run = do
     write "NICK" ournick
     write "USER" $ ournick++" 0 * :TokTok DevBot"
-    mapM (write "JOIN") chans
+    write "PRIVMSG" "NickServ :IDENTIFY " ++ nick_password
     asks socket >>= listen
 
 listen :: Handle -> Net ()
 listen h = forever $ do
     string <- init `fmap` io (hGetLine h)
+    -- TODO sanitize utf-8 for the broken version of haskell on debian
     io $ putStrLn string
     if ping string
         then pong string
