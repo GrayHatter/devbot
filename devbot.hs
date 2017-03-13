@@ -1,24 +1,25 @@
 {-# LANGUAGE OverloadedStrings #-}
 
 -- import              Control.Arrow
+import           Control.Arrow                      (first)
 import           Control.Exception
 import           Control.Monad.Reader
-import qualified Data.ByteString.Char8              as CHAR8
-import qualified Data.ByteString.Lazy.Char8         as LCHAR8
+import           Control.Monad.State
 import           Data.List
 import           Data.Maybe
-import qualified Data.Text                          as P
-import qualified Data.Vector                        as V
--- import           Data.Time.Clock
+import           Data.Time.Clock
 import           Network
 import           Network.HTTP.Client
 import           Network.HTTP.Client.TLS
 import           Network.HTTP.Types.Status          (statusCode)
-import           Text.Printf
--- import              Data.Aeson (object, (.=), encode)
 import           System.Exit
 import           System.IO
+import           Text.Printf
 import           Text.Regex.Posix
+import qualified Data.ByteString.Char8              as CHAR8
+import qualified Data.ByteString.Lazy.Char8         as LCHAR8
+import qualified Data.Text                          as P
+import qualified Data.Vector                        as V
 
 import           GitHub.Data.Id                     as G
 import           GitHub.Data.Milestone              as G
@@ -32,13 +33,13 @@ import qualified GitHub.Endpoints.Issues.Milestones as G
 ournick =   "devbot"
 server  =   "irc.freenode.org"
 port    =   6667
-chans   =   [   "#toktok"
-            ,   "#toktok-status"
+chans   =   [   "#devbot-dev"
             ,   "#utox"
+            ,   "#toktok"
+            ,   "#tox-dev"
             ]
 
 nick_password = ""
-
 
 enabled_repos = [   -- TokTok repos
                     "apidsl"
@@ -69,13 +70,26 @@ enabled_repos = [   -- TokTok repos
                 ,   "utox"
                 ]
 
-regex = "(" ++ (intercalate "|" enabled_repos) ++ ")#([0-9]+)"
+regex_GH_gen    = "#([0-9]{1,5})" :: String
+regex_GH_real   = "(" ++ (intercalate "|" enabled_repos) ++ ")" ++ regex_GH_gen
+regex_gl        = "(![0-9]{1,5})" :: String
+regex_gli       = "(i[0-9]{1,5})" :: String
 
-data Bot = Bot {
-    socket :: Handle
-}
 
-type Net = ReaderT Bot IO
+data Bot = Bot
+    {   socket      :: Handle
+    ,   channels    :: [String]
+    ,   start_time  :: UTCTime
+    ,   last_repo   :: String -- TODO don't use global state
+    }
+
+data Channel = Channel
+    {   name            :: String
+    ,   users           :: [User]
+    ,   default_repo    :: [String]
+    }
+
+type Net  = StateT Bot IO
 
 data User = User
     {   nick :: String
@@ -87,104 +101,215 @@ data User = User
 --  IRC connection and logic
 ------------------------------------------------
 main :: IO ()
-main = bracket connect disconnect loop
+main = bracket conn disconnect loop
   where
     disconnect  = hClose . socket
-    loop st     = runReaderT run st
+    loop st     = evalStateT run st
 
-connect :: IO Bot
-connect = notify $ do
+conn :: IO Bot
+conn = do
     irc_conn <- connectTo server $ PortNumber $ Main.port
     hSetBuffering irc_conn NoBuffering
-    return (Bot irc_conn)
-  where
-    notify a = bracket_
-        (printf "Connecting to %s ... " server >> hFlush stdout)
-        (putStrLn "done.")
-        a
+    c <- getCurrentTime
+    return (Bot irc_conn [] c [])
+    where
+        notify a = bracket_ (printf "connecting to %s..." server >> hFlush stdout) (putStrLn "connected!") a
 
 run :: Net ()
 run = do
     write "NICK" ournick
-    write "USER" $ ournick++" 0 * :TokTok DevBot"
-    write "PRIVMSG" "NickServ :IDENTIFY " ++ nick_password
-    asks socket >>= listen
+    write "USER" $ ournick++" 0 * :uTox DevBot"
+    write "PRIVMSG" ("NickServ :IDENTIFY devbot " ++ nick_password)
+    listen
 
-listen :: Handle -> Net ()
-listen h = forever $ do
+listen :: Net ()
+listen = forever $ do
+    h <- gets socket
     string <- init `fmap` io (hGetLine h)
     -- TODO sanitize utf-8 for the broken version of haskell on debian
-    io $ putStrLn string
-    if ping string
-        then pong string
-        else eval (source string) (target string) (message string)
+    if "PING :" `isPrefixOf` string
+        then io $ hPrintf h "PONG :%s\r\n" string
+        else do io $ putStrLn string
+                eval (source string) (action string) (target string) (message string)
   where
     forever a = do a; forever a
 
     source  = takeWhile (/= ' ') . drop 1
-    target  = takeWhile (/= ' ') . dropWhile (/= '#')
+    action  = takeWhile (/= ' ') . drop 1 . dropWhile (/= ' ')
+    target  = takeWhile (/= ' ') . drop 1 . dropWhile (/= ' ') . drop 1 . dropWhile (/= ' ')
     message = drop 1 . dropWhile (/= ':') . drop 1
-
-    ping x    = "PING :" `isPrefixOf` x
-    pong x    = write "PONG" $ ':' : drop 6 x
 
 write :: String -> String -> Net ()
 write string text = do
     io $ printf    "> %s %s\n" string text
-    h <- asks socket
+    h <- gets socket
     io $ hPrintf h "%s %s\r\n" string text
 
 ------------------------------------------------
 --  Main processor
 ------------------------------------------------
-eval :: String -> String -> String -> Net ()
-eval source target "is now your hidden host (set by services.)" = do
-    mapM (write "JOIN") chans
+eval :: String -> String -> String -> String -> Net ()
+eval source action target "is now your hidden host (set by services.)" = do
+    mapM joinChan chans
     return()
-eval _ target "!die" = do
-    privMsg target "Sure, I'll just DIE then!"
-    write "QUIT" ":My death was ordered" >> io (exitWith ExitSuccess)
-eval _ target "!m" = do
-    text <- io $ nextMilestone True "TokTok" "c-toxcore"
-    privMsg target $ text
-eval source target "!ms" = eval source target "!milestone"
-eval _ target "!milestone" = do
-    text <- io $ nextMilestone False "TokTok" "c-toxcore"
-    privMsg target $ text
-eval _ target "!status iphy" = do
-    privMsg target "iphy's current status :: https://img.shields.io/badge/iphy-savage-red.svg"
-eval _ target "!interject" = do
-    privMsg target "I'd just like to interject for a moment. What you’re referring to as Linux, is in fact, GNU/Linux, or as I’ve recently taken to calling it, GNU plus Linux. Linux is not an operating system unto itself, but rather another"
+eval _ "INVITE" _ chan = do
+    joinChan chan
+eval source action target "!ms" = eval source action target "!milestone"
+eval _ _ target "!interject" = do
+    chNick  "Stallmon"
+    privMsg target "I'd just like to interject for a moment. What you're referring to as Linux, is in fact, GNU/Linux, or as I've recently taken to calling it, GNU plus Linux. Linux is not an operating system unto itself, but rather another"
     privMsg target "free component of a fully functioning GNU system made useful by the GNU corelibs, shell utilities and vital system components comprising a full OS as defined by POSIX. Many computer users run a modified version of the GNU system every day, without realizing it."
-    privMsg target "Through a peculiar turn of events, the version of GNU which is widely used today is often called “Linux”, and many of its users are not aware that it is basically the GNU system, developed by the GNU Project."
-    privMsg target "There really is a Linux, and these people are using it, but it is just a part of the system they use. Linux is the kernel: the program in the system that allocates the machine’s resources to the other programs that you run."
-    privMsg target "The kernel is an essential part of an operating system, but useless by itself; it can only function in the context of a complete operating system. Linux is normally used in combination with the GNU operating system: the whole system is basically GNU with Linux added, or GNU/Linux. All the so-called “Linux” distributions are really distributions of GNU/Linux."
-eval source target msg
+    privMsg target "Through a peculiar turn of events, the version of GNU which is widely used today is often called \"Linux\", and many of its users are not aware that it is basically the GNU system, developed by the GNU Project."
+    privMsg target "There really is a Linux, and these people are using it, but it is just a part of the system they use. Linux is the kernel: the program in the system that allocates the machine's resources to the other programs that you run."
+    privMsg target "The kernel is an essential part of an operating system, but useless by itself; it can only function in the context of a complete operating system. Linux is normally used in combination with the GNU operating system: the whole system is basically GNU with Linux added, or GNU/Linux. All the so-called \"Linux\" distributions are really distributions of GNU/Linux."
+    chNick  ournick
+eval source action target msg
     -- Memes and time wasters
     | "devbot" `isPrefixOf` msg && "get to work" `isInfixOf` msg = privMsg target "Sir, yes sir!!!"
     | "devbot is fixed" `isPrefixOf` msg = privMsg target "WELL... maybe SOMEONE, should stop breaking me!"
     | "devbot you're awesome" `isInfixOf` msg = privMsg target "Awww... I love you too!"
+    | "devbot you're awesome" `isInfixOf` msg = privMsg target "Awww... I love you too!"
     | "devbot is awesome" `isInfixOf` msg = privMsg target "Awww... I love you too!"
     | "that's wrong!" `isInfixOf` msg = privMsg target "OH NO! someone is wrong on the internet! https://xkcd.com/386/"
+    | "o home devbot" `isInfixOf` msg && "you're drunk" `isInfixOf` msg = do
+        privMsg target "oh... okay :("
+        partChan target
+    -- banned phrases
+    | "allah is doing" `isInfixOf` msg = kickBan target source
     -- Actual work
-    | "what's next?" `isInfixOf` msg = eval source target "!ms"
-    | "whats next?" `isInfixOf` msg = eval source target "!ms"
-    | "what's left?" `isInfixOf` msg = eval source target "!ms"
-    | "whats left?" `isInfixOf` msg = eval source target "!ms"
-    | "!echo " `isPrefixOf` msg = privMsg target $ drop 6 msg
-    | msg =~ regex = do
-        url <- io $ checkIssue (takeWhile (/= '-') $ drop 1 target) msg
-        if isJust url
-            then privMsg target $ fromJust url
-            else return ()
+    | "what's next?" `isInfixOf` msg = eval source action target "!ms"
+    | "whats next?" `isInfixOf` msg = eval source action target "!ms"
+    | "what's left?" `isInfixOf` msg = eval source action target "!ms"
+    | "whats left?" `isInfixOf` msg = eval source action target "!ms"
+    | msg =~ regex_GH_gen = issueFinder source action target msg
+    | msg =~ regex_gl  = do
+        mapM_ (privMsg' target) ((getAllTextMatches $ msg =~ regex_gl) :: [String])
+        return ()
+    | msg =~ regex_gli = privMsg target $ "https://gitlab.com/uTox/uTox/issues/"         ++ drop 1 (msg =~ regex_gli)
+    | "!" `isPrefixOf` msg = evalCommand source action target msg
     | otherwise = return ()
 
+privMsg' :: String -> String -> Net ()
+privMsg' x y = privMsg x $ "https://gitlab.com/uTox/uTox/merge_requests/" ++ drop 1 y
+
+evalCommand :: String -> String -> String -> String -> Net ()
+evalCommand source action target msg
+    -- all the cool commands we do stuff with
+    | "!echo " `isPrefixOf` msg = do
+        privMsg target $ drop 6 msg
+    | "!echo" == msg = do
+        privMsg target "Echo what exactly?"
+    | "!die" == msg = do
+        privMsg target "Sure, I'll just DIE then!"
+        write "QUIT" ":My death was ordered" >> io (exitWith ExitSuccess)
+    | "!m"   == msg = do
+        text <- io $ nextMilestone True "TokTok" "c-toxcore"
+        privMsg target $ text
+    | "!milestone" `isPrefixOf` msg = do
+        text <- io $ nextMilestone False "TokTok" "c-toxcore"
+        privMsg target $ text
+    | "!status " `isPrefixOf` msg = do
+        let s = chkStatus $ takeWhile (/= ' ') . drop 8 $ msg
+        if isJust s
+            then privMsg target $ fromJust s
+            else return ()
+    | "!moose"  `isPrefixOf` msg = privMsg target "https://www.youtube.com/watch?v=7fE0YhEFvx4"
+    | "!commitsudoku" == msg = privMsg target "http://www.sudokuweb.org/"
+    | "!uptime" == msg = uptime >>= privMsg target
+    | "!build "  `isPrefixOf` msg = do
+        res <- io $ ciTriggerGitlab $ (takeWhile (/= ' ') . drop 7) msg
+        if res
+            then privMsg target "Build Running :D => https://gitlab.com/uTox/uTox/pipelines"
+            else privMsg target "Error Sending Commands :<"
+    |   otherwise = return ()
+
+chkStatus :: String -> Maybe String
+chkStatus "iphy"    = Just "iphy's current status :: https://img.shields.io/badge/iphy-savage-red.svg"
+chkStatus "toxcore" = Just "Toxcore's current status :: https://img.shields.io/badge/toxcore-rip-red.svg"
+chkStatus _         = Nothing
+
+kickBan :: String -> String -> Net ()
+kickBan channel shitball = do
+    setBan channel shitball
+    kick   channel shitball
+
+kick :: String -> String -> Net ()
+kick channel shitball = write "KICK" $ channel ++ " " ++ takeWhile (/= '!') shitball
+
+setBan :: String -> String -> Net ()
+setBan channel shitball = chanMode "+b" channel (dropWhile (/= '!') shitball)
+
+chanMode :: String -> String -> String -> Net ()
+chanMode mode target user = do
+    write "MODE" $ target ++ " " ++ mode ++ " " ++ user
+
+chanSetRepo :: String -> String -> Net ()
+chanSetRepo chan def = do
+    real <- gets channels
+    -- TODO actually story by channel, and not global state :< (Sorry It's late)
+    modify (\bot -> bot { last_repo = def })
 
 privMsg :: String -> String -> Net ()
 privMsg to text = write "PRIVMSG" $ to ++ " :" ++ text
 
+chNick :: String -> Net ()
+chNick nick = write "NICK" nick
+
+joinChan :: String -> Net ()
+joinChan chan = do
+    write "JOIN" chan
+    old <- gets channels
+    let new = (old ++ [chan])
+    mapM (\x -> io $ putStrLn x) $ nub new
+    modify (\bot -> bot { channels = (nub new) })
+
+partChan :: String -> Net ()
+partChan chan = write "PART"  (chan ++ " :bye then...")
+
+uptime :: Net String
+uptime = do
+    now  <- io getCurrentTime
+    zero <- gets start_time
+    return . humanTime $ diffUTCTime now zero
+
+
+issueFinder :: String -> String -> String -> String -> Net ()
+issueFinder src act trg msg
+    -- Issue finder
+    | msg =~ regex_GH_real = do
+        let tag = (msg =~ regex_GH_real)
+        let repo_name = (takeWhile (/= '#') tag)
+        let issu_numb = drop 1 (dropWhile (/= '#') tag)
+        url <- io $ checkIssue (drop 1 trg) repo_name $ read issu_numb
+        if isJust url
+            then do privMsg trg $ fromJust url
+                    chanSetRepo trg repo_name
+            else privMsg trg ("Can't find that repo (" ++ drop 1 trg ++ "/" ++ repo_name ++ "#" ++ issu_numb ++ ")")
+    | msg =~ regex_GH_gen = do
+        let tag = msg =~ regex_GH_gen
+        repo_name <- gets last_repo
+        let issu_numb = drop 1 (dropWhile (/= '#') tag)
+        url <- io $ checkIssue (drop 1 trg) repo_name $ read issu_numb
+        if isJust url
+            then privMsg trg $ fromJust url
+            else privMsg trg ("Can't find that repo (_/" ++ repo_name ++ "#" ++ issu_numb ++ ")")
+    | otherwise = return ()
+
+
+
+humanTime :: NominalDiffTime -> String
+humanTime td =
+    unwords $ map (uncurry (++) . first show) $
+    if null diffs then [(0,"s")] else diffs
+    where merge (tot, acc) (sec, typ) = let (sec', tot') = divMod tot sec
+                                        in (tot', (sec',typ):acc)
+          metrics = [(86400, "d"), (3600, "h"), (60, "m"), (1, "s")]
+          diffs   = filter ((/= 0) . fst) $ reverse $ snd $
+                    foldl' merge (round td,[]) metrics
+
+
 ------------------------------------------------
---  Milestones
+-- GitHub Milestones
 ------------------------------------------------
 nextMilestone :: Bool -> String -> String -> IO (String)
 nextMilestone verbose group repo = do
@@ -207,17 +332,19 @@ parseMilestone verbose miles group = do
     let closed  = G.milestoneClosedIssues miles
     let total   = open + closed
     let percent = (fromIntegral closed) / (fromIntegral total ) :: Float
-    -- now <- getCurrentTime
-    -- let time    = diffUTCTime now $ fromJust $ G.milestoneDueOn miles
+    now <- getCurrentTime
+    let time    = diffUTCTime (fromJust $ G.milestoneDueOn miles) now
 
     -- Try to make it small
     str <- githubMkShort url (name)
+
     if verbose
-        then return $ (printf "Milestone %.3f%% (%d of %d) " (percent * 100) closed total :: String) ++ (fromMaybe (show url) str) ++ " || " ++ "https://reviewable.io/reviews#q=" ++ m_tag ++ " || TODO days hours minutes until due"
+        then return $ (printf "Milestone %.3f%% (%d of %d) " (percent * 100) closed total :: String) ++ (fromMaybe (show url) str) ++
+                        " || " ++ "https://reviewable.io/reviews#q=" ++ m_tag ++ " || Due in " ++ humanTime time
         else return $ (printf           "%.0f%% (%d of %d) " (percent * 100) closed total :: String) ++ (fromMaybe (show url) str)
 
 ------------------------------------------------
---  Issues
+--  GitHub Issues
 ------------------------------------------------
 parseAssigned :: G.Issue -> IO [String]
 parseAssigned issue = do
@@ -225,18 +352,15 @@ parseAssigned issue = do
     let names = map (githubToIRC . P.unpack . G.untagName . G.simpleUserLogin) assigned
     return (names)
 
-checkIssue :: String -> String -> IO (Maybe String)
-checkIssue owner msg = do
-    let tag = msg =~ regex -- Find supported tags
-    let repo_name = (takeWhile (/= '#') tag)
-    let issu_numb = read (drop 1 (dropWhile (/= '#') tag))
-    possibleIssue <- G.issue (G.mkOwnerName (P.pack owner)) (G.mkRepoName (P.pack repo_name)) (G.Id issu_numb)
+checkIssue :: String -> String -> Int -> IO (Maybe String)
+checkIssue owner repo inum = do
+    possibleIssue <- G.issue (G.mkOwnerName (P.pack owner)) (G.mkRepoName (P.pack repo)) (G.Id inum)
     case possibleIssue of
         Left _ -> case owner of
-            "toktok" -> checkIssue "utox"   msg
-            "utox"   -> checkIssue "toktok" msg
+            -- Swap once (Hacky)
+            "toktok" -> checkIssue "utox"   repo inum
             _        -> return (Nothing)
-        Right real_issue -> realIssue repo_name owner issu_numb real_issue
+        Right real_issue -> realIssue repo owner inum real_issue
 
 realIssue :: String -> String -> Int -> G.Issue -> IO (Maybe String)
 realIssue repo_name owner issu_numb issue = do
@@ -245,10 +369,55 @@ realIssue repo_name owner issu_numb issue = do
     let o_user = (P.unpack . G.untagName . G.simpleUserLogin $ G.issueUser  issue)
     let title  = (P.unpack $ G.issueTitle issue)
     let url    = (P.unpack . G.getUrl $ fromJust $ G.issueHtmlUrl issue)
-    let str    = url ++ " " ++ title ++ " (Owner: " ++ (githubToIRC o_user) ++ " Assigned to: " ++ a_user ++ ") "
+    let str    = title ++ " (Owner: " ++ (githubToIRC o_user) ++ " Assigned to: " ++ a_user ++ ") " ++ url ++ " "
     if "pull" `isInfixOf` url
-        then return (Just (str ++ "https://reviewable.io/reviews/" ++ owner ++ "/" ++ repo_name ++ "/" ++ show issu_numb))
+        then return (Just (str ++ "|| https://reviewable.io/reviews/" ++ owner ++ "/" ++ repo_name ++ "/" ++ show issu_numb))
         else return (Just str)
+
+
+------------------------------------------------
+--  GitLab helpers
+------------------------------------------------
+gl_ci_token  = ""
+gl_ci_target = ""
+
+ciTriggerGitlab :: String -> IO (Bool)
+ciTriggerGitlab ref = do
+    manager <- newManager tlsManagerSettings
+    initRequest <- parseRequest gl_ci_target
+
+    let requestText = [("token", CHAR8.pack gl_ci_token), ("ref", CHAR8.pack ref)]
+    let request = urlEncodedBody requestText $ initRequest { method = "POST" }
+    response <- httpLbs request manager
+
+    let code = statusCode $ responseStatus response
+    putStrLn $ LCHAR8.unpack (responseBody response)
+    putStrLn $ "The status code was: " ++ (show code)
+
+    let headers = responseHeaders response
+    let res = (lookup "location" headers)
+    if code == 201
+        then return (True)
+        else return (False)
+
+gitlabAPI :: String -> IO (Bool)
+gitlabAPI ref = do
+    manager <- newManager tlsManagerSettings
+    initRequest <- parseRequest gl_ci_target
+
+    let requestText = [("token", CHAR8.pack gl_ci_token), ("ref", CHAR8.pack ref)]
+    let request = urlEncodedBody requestText $ initRequest { method = "POST" }
+    response <- httpLbs request manager
+
+    let code = statusCode $ responseStatus response
+    putStrLn $ LCHAR8.unpack (responseBody response)
+    putStrLn $ "The status code was: " ++ (show code)
+
+    let headers = responseHeaders response
+    let res = (lookup "location" headers)
+    if code == 201
+        then return (True)
+        else return (False)
 
 
 ------------------------------------------------
