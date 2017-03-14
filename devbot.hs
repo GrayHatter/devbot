@@ -70,23 +70,29 @@ enabled_repos = [   -- TokTok repos
                 ,   "utox"
                 ]
 
-regex_GH_gen    = "#([0-9]{1,5})" :: String
-regex_GH_real   = "(" ++ (intercalate "|" enabled_repos) ++ ")" ++ regex_GH_gen
+enabled_owners =    [   "utox"
+                    ,   "toktok"
+                    ,   "irungentoo"
+                    ] :: [String]
+
+regex_GH_num    = "#([0-9]{1,5})" :: String
+regex_GH_repo   = "(" ++ (intercalate "|" enabled_repos)  ++ ")"  ++ regex_GH_num
+regex_GH_owner  = "(" ++ (intercalate "|" enabled_owners) ++ ")/" ++ regex_GH_repo
 regex_gl        = "(![0-9]{1,5})" :: String
 regex_gli       = "(i[0-9]{1,5})" :: String
 
 
 data Bot = Bot
     {   socket      :: Handle
-    ,   channels    :: [String]
+    ,   channels    :: [Channel]
     ,   start_time  :: UTCTime
-    ,   last_repo   :: String -- TODO don't use global state
     }
 
 data Channel = Channel
-    {   name            :: String
+    {   chname          :: String
     ,   users           :: [User]
-    ,   default_repo    :: [String]
+    ,   default_rown    :: String
+    ,   default_repo    :: String
     }
 
 type Net  = StateT Bot IO
@@ -111,7 +117,7 @@ conn = do
     irc_conn <- connectTo server $ PortNumber $ Main.port
     hSetBuffering irc_conn NoBuffering
     c <- getCurrentTime
-    return (Bot irc_conn [] c [])
+    return (Bot irc_conn [] c)
     where
         notify a = bracket_ (printf "connecting to %s..." server >> hFlush stdout) (putStrLn "connected!") a
 
@@ -181,12 +187,14 @@ eval source action target msg
     | "whats next?" `isInfixOf` msg = eval source action target "!ms"
     | "what's left?" `isInfixOf` msg = eval source action target "!ms"
     | "whats left?" `isInfixOf` msg = eval source action target "!ms"
-    | msg =~ regex_GH_gen = issueFinder source action target msg
+    -- check commands before checking regex
+    | "!" `isPrefixOf` msg = evalCommand source action target msg
+    -- regex searches
+    | msg =~ regex_GH_num = issueFinder source action target msg
     | msg =~ regex_gl  = do
         mapM_ (privMsg' target) ((getAllTextMatches $ msg =~ regex_gl) :: [String])
         return ()
     | msg =~ regex_gli = privMsg target $ "https://gitlab.com/uTox/uTox/issues/"         ++ drop 1 (msg =~ regex_gli)
-    | "!" `isPrefixOf` msg = evalCommand source action target msg
     | otherwise = return ()
 
 privMsg' :: String -> String -> Net ()
@@ -243,11 +251,18 @@ chanMode :: String -> String -> String -> Net ()
 chanMode mode target user = do
     write "MODE" $ target ++ " " ++ mode ++ " " ++ user
 
+dumpChans :: [Channel] -> Net ()
+dumpChans channs = mapM_ (\x -> io $ putStrLn ((chname x) ++ " " ++ (default_repo x))) channs
+
 chanSetRepo :: String -> String -> Net ()
-chanSetRepo chan def = do
+chanSetRepo search repo = do
     real <- gets channels
-    -- TODO actually story by channel, and not global state :< (Sorry It's late)
-    modify (\bot -> bot { last_repo = def })
+    let (ch, other) = (botPopChan search real)
+    let ch' = if isJust ch then (fromJust ch) else Channel search [] repo repo -- We're just guessing here :<
+    let ch' = ch' { default_repo = repo }
+    let new = other ++ [ch']
+    -- dumpChans new
+    modify (\bot -> bot { channels = new })
 
 privMsg :: String -> String -> Net ()
 privMsg to text = write "PRIVMSG" $ to ++ " :" ++ text
@@ -255,13 +270,23 @@ privMsg to text = write "PRIVMSG" $ to ++ " :" ++ text
 chNick :: String -> Net ()
 chNick nick = write "NICK" nick
 
+botPopChan :: String -> [Channel] -> (Maybe Channel, [Channel])
+botPopChan search cs = do
+    if isJust found
+        then (found, other)
+        else (Nothing, cs)
+    where
+        found = find   (\x -> search == chname x) cs
+        other = filter (\x -> search /= chname x) cs
+
 joinChan :: String -> Net ()
-joinChan chan = do
-    write "JOIN" chan
+joinChan c = do
+    write "JOIN" c
     old <- gets channels
+    let chan = (Channel c [] [] [])
     let new = (old ++ [chan])
-    mapM (\x -> io $ putStrLn x) $ nub new
-    modify (\bot -> bot { channels = (nub new) })
+    -- dumpChans new
+    modify (\bot -> bot { channels =  new })
 
 partChan :: String -> Net ()
 partChan chan = write "PART"  (chan ++ " :bye then...")
@@ -272,30 +297,35 @@ uptime = do
     zero <- gets start_time
     return . humanTime $ diffUTCTime now zero
 
-
 issueFinder :: String -> String -> String -> String -> Net ()
 issueFinder src act trg msg
     -- Issue finder
-    | msg =~ regex_GH_real = do
-        let tag = (msg =~ regex_GH_real)
-        let repo_name = (takeWhile (/= '#') tag)
-        let issu_numb = drop 1 (dropWhile (/= '#') tag)
-        url <- io $ checkIssue (drop 1 trg) repo_name $ read issu_numb
+    | msg =~ regex_GH_owner = do
+        let set_own = takeWhile (/= '/') $ msg =~ regex_GH_owner
+        url <- io $ checkIssue set_own repo $ read inum
         if isJust url
             then do privMsg trg $ fromJust url
-                    chanSetRepo trg repo_name
-            else privMsg trg ("Can't find that repo (" ++ drop 1 trg ++ "/" ++ repo_name ++ "#" ++ issu_numb ++ ")")
-    | msg =~ regex_GH_gen = do
-        let tag = msg =~ regex_GH_gen
-        repo_name <- gets last_repo
-        let issu_numb = drop 1 (dropWhile (/= '#') tag)
-        url <- io $ checkIssue (drop 1 trg) repo_name $ read issu_numb
+                    chanSetRepo trg repo
+            else privMsg trg ("Can't find that issue (" ++ set_own ++ "/" ++ repo ++ "#" ++ inum ++ ")")
+    | msg =~ regex_GH_repo = do
+        url <- io $ checkIssue owner repo $ read inum
+        if isJust url
+            then do privMsg trg $ fromJust url
+                    chanSetRepo trg repo
+            else privMsg trg ("Can't find that issue (" ++ owner ++ "/" ++ repo ++ "#" ++ inum ++ ")")
+    | msg =~ regex_GH_num = do
+        allchan <- gets channels
+        let (ch, _) = botPopChan trg allchan
+        let last_repo = if isJust ch then default_repo (fromJust ch) else ""
+        url <- io $ checkIssue owner last_repo $ read inum
         if isJust url
             then privMsg trg $ fromJust url
-            else privMsg trg ("Can't find that repo (_/" ++ repo_name ++ "#" ++ issu_numb ++ ")")
+            else privMsg trg ("Can't find that issue (_/" ++ last_repo ++ "#" ++ inum ++ ")")
     | otherwise = return ()
-
-
+    where
+        owner = drop 1 trg
+        repo  = (takeWhile (/= '#') $ msg =~ regex_GH_repo)
+        inum  = drop 1 (dropWhile (/= '#') $ msg =~ regex_GH_num)
 
 humanTime :: NominalDiffTime -> String
 humanTime td =
@@ -306,7 +336,6 @@ humanTime td =
           metrics = [(86400, "d"), (3600, "h"), (60, "m"), (1, "s")]
           diffs   = filter ((/= 0) . fst) $ reverse $ snd $
                     foldl' merge (round td,[]) metrics
-
 
 ------------------------------------------------
 -- GitHub Milestones
@@ -353,23 +382,30 @@ parseAssigned issue = do
     return (names)
 
 checkIssue :: String -> String -> Int -> IO (Maybe String)
-checkIssue owner repo inum = do
-    possibleIssue <- G.issue (G.mkOwnerName (P.pack owner)) (G.mkRepoName (P.pack repo)) (G.Id inum)
+checkIssue o r inum = do
+    possibleIssue <- G.issue owner repo issID
     case possibleIssue of
-        Left _ -> case owner of
-            -- Swap once (Hacky)
-            "toktok" -> checkIssue "utox"   repo inum
-            _        -> return (Nothing)
-        Right real_issue -> realIssue repo owner inum real_issue
+        Left _ -> if any (== owner) $ map (G.mkOwnerName . P.pack) enabled_owners
+                    -- Swap once (Hacky)
+                    then return (Nothing)
+                    else case owner of
+                        "toktok" -> checkIssue "utox" r inum
+                        "utox"   -> checkIssue "toktok" r inum
+                        _        -> return (Nothing)
+        Right real_issue -> realIssue r o inum real_issue
+    where
+        owner = (G.mkOwnerName (P.pack o))
+        repo  = (G.mkRepoName  (P.pack r))
+        issID = (G.Id inum)
 
 realIssue :: String -> String -> Int -> G.Issue -> IO (Maybe String)
 realIssue repo_name owner issu_numb issue = do
     a_users <- parseAssigned issue
-    let a_user = (intercalate " " a_users)
+    let a_user = (intercalate " "  (" Assigned to:" : a_users))
     let o_user = (P.unpack . G.untagName . G.simpleUserLogin $ G.issueUser  issue)
     let title  = (P.unpack $ G.issueTitle issue)
     let url    = (P.unpack . G.getUrl $ fromJust $ G.issueHtmlUrl issue)
-    let str    = title ++ " (Owner: " ++ (githubToIRC o_user) ++ " Assigned to: " ++ a_user ++ ") " ++ url ++ " "
+    let str    = title ++ " (Owner: " ++ (githubToIRC o_user) ++ a_user ++ ") " ++ url ++ " "
     if "pull" `isInfixOf` url
         then return (Just (str ++ "|| https://reviewable.io/reviews/" ++ owner ++ "/" ++ repo_name ++ "/" ++ show issu_numb))
         else return (Just str)
