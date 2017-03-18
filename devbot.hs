@@ -1,14 +1,19 @@
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE DeriveGeneric     #-}
 
 -- import              Control.Arrow
 import           Control.Arrow                      (first)
 import           Control.Exception
 import           Control.Monad.Reader
 import           Control.Monad.State
+import           Data.Aeson                         (FromJSON (..), ToJSON (..), Object, withObject, decode, encode, (.:))
+import qualified Data.CaseInsensitive               as CI
 import           Data.List
 import           Data.Maybe
 import           Data.Time.Clock
+import           GHC.Generics                       (Generic)
 import           Network
+import           Network.HTTP.Simple
 import           Network.HTTP.Client
 import           Network.HTTP.Client.TLS
 import           Network.HTTP.Types.Status          (statusCode)
@@ -35,51 +40,17 @@ server  =   "irc.freenode.org"
 port    =   6667
 chans   =   [   "#devbot-dev"
             ,   "#utox"
-            ,   "#toktok"
-            ,   "#tox-dev"
+            ,   "#epic_cms"
             ]
 
 nick_password = ""
 
-enabled_repos = [   -- TokTok repos
-                    "apidsl"
-                ,   "c-toxcore-hs"
-                ,   "dockerfiles"
-                ,   "github-tools"
-                ,   "hs-msgpack"
-                ,   "hs-msgpack-rpc"
-                ,   "hs-schema"
-                ,   "hs-toxcore"
-                ,   "hs-toxcore-c"
-                ,   "js-toxcore-hs"
-                ,   "jvm-linters"
-                ,   "jvm-macros"
-                ,   "jvm-sbt-plugins"
-                ,   "jvm-toxcore-api"
-                ,   "jvm-toxcore-c"
-                ,   "py-toxcore-c"
-                ,   "semdoc"
-                ,   "spec"
-                ,   "tokstyle"
-                ,   "toktok-android"
-                ,   "toktok-stack"
-                ,   "toktok.github.io"
-                ,   "toxcore"
-                ,   "website"
-                    -- uTox/ repos
-                ,   "utox"
-                ]
 
-enabled_owners =    [   "utox"
-                    ,   "toktok"
-                    ,   "irungentoo"
-                    ] :: [String]
-
-regex_GH_num    = "#([0-9]{1,5})" :: String
-regex_GH_repo   = "(" ++ (intercalate "|" enabled_repos)  ++ ")"  ++ regex_GH_num
-regex_GH_owner  = "(" ++ (intercalate "|" enabled_owners) ++ ")/" ++ regex_GH_repo
-regex_gl        = "(![0-9]{1,5})" :: String
-regex_gli       = "(i[0-9]{1,5})" :: String
+regex_GH_num    = "(#[0-9]{1,5})" :: String
+regex_GH_repo   = "([a-zA-Z0-9.-]+)"   ++ regex_GH_num
+regex_GH_owner  = "([a-zA-Z0-9.-]+)/"  ++ regex_GH_repo
+regex_gl        = "((^|\\s)![0-9]{1,5})" :: String
+regex_gli       = "((^|\\s)i[0-9]{1,5})" :: String
 
 
 data Bot = Bot
@@ -93,7 +64,7 @@ data Channel = Channel
     ,   users           :: [User]
     ,   default_rown    :: String
     ,   default_repo    :: String
-    }
+    } deriving (Eq, Show)
 
 type Net  = StateT Bot IO
 
@@ -101,7 +72,7 @@ data User = User
     {   nick :: String
     ,   user :: String
     ,   host :: String
-    }
+    } deriving (Eq, Show)
 
 ------------------------------------------------
 --  IRC connection and logic
@@ -155,6 +126,11 @@ write string text = do
 --  Main processor
 ------------------------------------------------
 eval :: String -> String -> String -> String -> Net ()
+eval _ "332" _ _ = io $ putStrLn "DEBUG__ GOT CHAN TOPIC"
+eval _ "333" _ _ = io $ putStrLn "DEBUG__ GOT CHAN TOPIC SETBY"
+eval _ "353" _ _ = io $ putStrLn "DEBUG__ GOT USER LIST"
+eval _ "366" _ _ = io $ putStrLn "DEBUG__ EOF USER LIST"
+eval _ "473" _ _ = io $ putStrLn "DEBUG__ UNABLE TO JOIN CHANNEL (not invited)"
 eval source action target "is now your hidden host (set by services.)" = do
     mapM joinChan chans
     return()
@@ -170,49 +146,51 @@ eval _ _ target "!interject" = do
     privMsg target "The kernel is an essential part of an operating system, but useless by itself; it can only function in the context of a complete operating system. Linux is normally used in combination with the GNU operating system: the whole system is basically GNU with Linux added, or GNU/Linux. All the so-called \"Linux\" distributions are really distributions of GNU/Linux."
     chNick  ournick
 eval source action target msg
-    -- Memes and time wasters
-    | "devbot" `isPrefixOf` msg && "get to work" `isInfixOf` msg = privMsg target "Sir, yes sir!!!"
-    | "devbot is fixed" `isPrefixOf` msg = privMsg target "WELL... maybe SOMEONE, should stop breaking me!"
-    | "devbot you're awesome" `isInfixOf` msg = privMsg target "Awww... I love you too!"
-    | "devbot you're awesome" `isInfixOf` msg = privMsg target "Awww... I love you too!"
-    | "devbot is awesome" `isInfixOf` msg = privMsg target "Awww... I love you too!"
-    | "that's wrong!" `isInfixOf` msg = privMsg target "OH NO! someone is wrong on the internet! https://xkcd.com/386/"
-    | "o home devbot" `isInfixOf` msg && "you're drunk" `isInfixOf` msg = do
-        privMsg target "oh... okay :("
-        partChan target
     -- banned phrases
     | "allah is doing" `isInfixOf` msg = kickBan target source
     -- Actual work
-    | "what's next?" `isInfixOf` msg = eval source action target "!ms"
-    | "whats next?" `isInfixOf` msg = eval source action target "!ms"
-    | "what's left?" `isInfixOf` msg = eval source action target "!ms"
-    | "whats left?" `isInfixOf` msg = eval source action target "!ms"
     -- check commands before checking regex
-    | "!" `isPrefixOf` msg = evalCommand source action target msg
+    | "!" `isPrefixOf` msg = botCommand source action target msg
     -- regex searches
-    | msg =~ regex_GH_num = issueFinder source action target msg
+    | msg =~ ("[Dd]evbot[;:,]?" :: String) = evalMention source action target msg
+    | msg =~ regex_GH_num = issueFinder target msg
     | msg =~ regex_gl  = do
-        mapM_ (privMsg' target) ((getAllTextMatches $ msg =~ regex_gl) :: [String])
+        mapM_ (gitLabMagic target) ((getAllTextMatches $ msg =~ regex_gl) :: [String])
         return ()
     | msg =~ regex_gli = privMsg target $ "https://gitlab.com/uTox/uTox/issues/"         ++ drop 1 (msg =~ regex_gli)
+    -- be funny!
+    | "that's wrong!"  `isInfixOf`  msg = privMsg target "OH NO! someone is wrong on the internet! https://xkcd.com/386/"
     | otherwise = return ()
 
-privMsg' :: String -> String -> Net ()
-privMsg' x y = privMsg x $ "https://gitlab.com/uTox/uTox/merge_requests/" ++ drop 1 y
+gitLabMagic :: String -> String -> Net ()
+gitLabMagic x y = privMsg x $ "https://gitlab.com/uTox/uTox/merge_requests/" ++ drop 1 (dropWhile (/= '!') y)
 
-evalCommand :: String -> String -> String -> String -> Net ()
-evalCommand source action target msg
+evalMention :: String -> String -> String -> String -> Net()
+evalMention _ _ t msg
+    -- Memes and time wasters
+    | "is fixed"    `isInfixOf` msg = privMsg t "WELL... maybe SOMEONE, should stop breaking me!"
+    | "get to work" `isInfixOf` msg = privMsg t "Sir, yes sir!!!"
+    | msg =~ ("[Gg]o home devbot(.)+you're drunk" :: String) = do privMsg t "oh... okay :("; partChan t
+    | msg =~ ("(you're|your|is) awesome" :: String) = privMsg t "Awww... I love you too!"
+    | msg =~ ("what(')?s (next|left)\\?" :: String) = eval "" "" t "!m"
+    | msg =~ ("^[Dd]evbot[;:,]? " :: String) = privMsg t "You said my name!! :D"
+    | otherwise = return ()
+
+
+botCommand :: String -> String -> String -> String -> Net ()
+botCommand _ _ target "!moose"        = privMsg target "https://www.youtube.com/watch?v=7fE0YhEFvx4"
+botCommand _ _ target "!commitsudoku" = privMsg target "http://www.sudokuweb.org/"
+botCommand _ _ target "!uptime"       = uptime >>= privMsg target
+botCommand _ _ target "!rip"          = sayRip target
+botCommand _ _ target "!m"            = io (nextMilestone True "TokTok" "c-toxcore") >>= privMsg target
+botCommand _ _ target "!echo"         = privMsg target "Echo what exactly?"
+botCommand source action target msg
     -- all the cool commands we do stuff with
     | "!echo " `isPrefixOf` msg = do
         privMsg target $ drop 6 msg
-    | "!echo" == msg = do
-        privMsg target "Echo what exactly?"
     | "!die" == msg = do
         privMsg target "Sure, I'll just DIE then!"
         write "QUIT" ":My death was ordered" >> io (exitWith ExitSuccess)
-    | "!m"   == msg = do
-        text <- io $ nextMilestone True "TokTok" "c-toxcore"
-        privMsg target $ text
     | "!milestone" `isPrefixOf` msg = do
         text <- io $ nextMilestone False "TokTok" "c-toxcore"
         privMsg target $ text
@@ -221,9 +199,9 @@ evalCommand source action target msg
         if isJust s
             then privMsg target $ fromJust s
             else return ()
-    | "!moose"  `isPrefixOf` msg = privMsg target "https://www.youtube.com/watch?v=7fE0YhEFvx4"
-    | "!commitsudoku" == msg = privMsg target "http://www.sudokuweb.org/"
-    | "!uptime" == msg = uptime >>= privMsg target
+    | "!set "    `isPrefixOf` msg = setState source target (drop 5 msg)
+    | "!ghost "  `isPrefixOf` msg = privMsg ((takeWhile (/= ' ') . drop 7) msg) ((drop 1 . dropWhile (/= ' ') . drop 8) msg)
+    | "!join "   `isPrefixOf` msg = joinChan ((takeWhile (/= ' ') . drop 6) msg)
     | "!build "  `isPrefixOf` msg = do
         res <- io $ ciTriggerGitlab $ (takeWhile (/= ' ') . drop 7) msg
         if res
@@ -231,9 +209,38 @@ evalCommand source action target msg
             else privMsg target "Error Sending Commands :<"
     |   otherwise = return ()
 
+setState :: String -> String -> String -> Net ()
+setState src trg msg
+    | "#" `isPrefixOf` trg = setStateChannel src trg msg
+    | otherwise = setStateUser src trg msg
+
+setStateChannel :: String -> String -> String -> Net ()
+setStateChannel _ trg msg
+    | "repo_owner " `isPrefixOf` msg = chanSetOwn  trg (drop 11 msg)
+    | "repo_name "  `isPrefixOf` msg = chanSetRepo trg (drop 10 msg)
+    | otherwise = return ()
+
+setStateUser :: String -> String -> String -> Net ()
+setStateUser src trg msg
+    | "gitlab_token " `isPrefixOf` msg = return () -- userSetToken
+    | otherwise = return ()
+
+sayRip :: String -> Net ()
+sayRip t = do
+    privMsg t "Poor one out for the devs Tox has eaten"
+    privMsg t "irungentoo 2013-2016"
+    privMsg t "iphy 2015-2017"
+    privMsg t "mannol 2014-2016"
+    privMsg t "jfreegman 2014-2015"
+    privMsg t "May Tox rest their soul..."
+
 chkStatus :: String -> Maybe String
-chkStatus "iphy"    = Just "iphy's current status :: https://img.shields.io/badge/iphy-savage-red.svg"
-chkStatus "toxcore" = Just "Toxcore's current status :: https://img.shields.io/badge/toxcore-rip-red.svg"
+chkStatus "iphy"    = Just "iphy's current status :: https://img.shields.io/badge/iphy-rip-gray.svg"
+chkStatus "toxcore" = Just "Toxcore's current status :: http://i.imgur.com/c4jt321.png"
+chkStatus "devbot"  = Just "DevBot's current status :: https://utox.io/devbot.jpg"
+chkStatus "haskell" = Just "Haskell's current status :: https://utox.io/haskell.png"
+chkStatus "qtox"    = Just "qTox's current status :: https://utox.io/qtox.jpg :: http://qtox.rip"
+chkStatus "utox"    = Just "uTox's current status :: https://utox.io/utox.png"
 chkStatus _         = Nothing
 
 kickBan :: String -> String -> Net ()
@@ -257,12 +264,26 @@ dumpChans channs = mapM_ (\x -> io $ putStrLn ((chname x) ++ " " ++ (default_rep
 chanSetRepo :: String -> String -> Net ()
 chanSetRepo search repo = do
     real <- gets channels
-    let (ch, other) = (botPopChan search real)
-    let ch' = if isJust ch then (fromJust ch) else Channel search [] repo repo -- We're just guessing here :<
-    let ch' = ch' { default_repo = repo }
-    let new = other ++ [ch']
-    -- dumpChans new
-    modify (\bot -> bot { channels = new })
+    let (ch, other) = botPopChan search real
+    if null ch
+        then return ()
+        else do
+            let ch' = head ch -- We're just guessing here :<
+            let ch2 = ch' { default_repo = repo }
+            let new = nubBy (\x y -> chname x == chname y) $ ch2 : other
+            modify (\bot -> bot { channels = new })
+
+chanSetOwn :: String -> String -> Net ()
+chanSetOwn search owner = do
+    real <- gets channels
+    let (ch, other) = botPopChan search real
+    if null ch
+        then return ()
+        else do
+            let ch' = head ch -- We're just guessing here :<
+            let ch2 = ch' { default_rown = owner }
+            let new = nubBy (\x y -> chname x == chname y) $ ch2 : other
+            modify (\bot -> bot { channels = new })
 
 privMsg :: String -> String -> Net ()
 privMsg to text = write "PRIVMSG" $ to ++ " :" ++ text
@@ -270,21 +291,15 @@ privMsg to text = write "PRIVMSG" $ to ++ " :" ++ text
 chNick :: String -> Net ()
 chNick nick = write "NICK" nick
 
-botPopChan :: String -> [Channel] -> (Maybe Channel, [Channel])
-botPopChan search cs = do
-    if isJust found
-        then (found, other)
-        else (Nothing, cs)
-    where
-        found = find   (\x -> search == chname x) cs
-        other = filter (\x -> search /= chname x) cs
+botPopChan :: String -> [Channel] -> ([Channel], [Channel])
+botPopChan search cs = partition (\x -> search == chname x) cs
 
 joinChan :: String -> Net ()
 joinChan c = do
     write "JOIN" c
     old <- gets channels
     let chan = (Channel c [] [] [])
-    let new = (old ++ [chan])
+    let new = nubBy (\x y -> chname x == chname y) $ chan : old
     -- dumpChans new
     modify (\bot -> bot { channels =  new })
 
@@ -297,35 +312,29 @@ uptime = do
     zero <- gets start_time
     return . humanTime $ diffUTCTime now zero
 
-issueFinder :: String -> String -> String -> String -> Net ()
-issueFinder src act trg msg
-    -- Issue finder
-    | msg =~ regex_GH_owner = do
-        let set_own = takeWhile (/= '/') $ msg =~ regex_GH_owner
-        url <- io $ checkIssue set_own repo $ read inum
-        if isJust url
-            then do privMsg trg $ fromJust url
-                    chanSetRepo trg repo
-            else privMsg trg ("Can't find that issue (" ++ set_own ++ "/" ++ repo ++ "#" ++ inum ++ ")")
-    | msg =~ regex_GH_repo = do
-        url <- io $ checkIssue owner repo $ read inum
-        if isJust url
-            then do privMsg trg $ fromJust url
-                    chanSetRepo trg repo
-            else privMsg trg ("Can't find that issue (" ++ owner ++ "/" ++ repo ++ "#" ++ inum ++ ")")
-    | msg =~ regex_GH_num = do
-        allchan <- gets channels
-        let (ch, _) = botPopChan trg allchan
-        let last_repo = if isJust ch then default_repo (fromJust ch) else ""
-        url <- io $ checkIssue owner last_repo $ read inum
-        if isJust url
-            then privMsg trg $ fromJust url
-            else privMsg trg ("Can't find that issue (_/" ++ last_repo ++ "#" ++ inum ++ ")")
-    | otherwise = return ()
-    where
-        owner = drop 1 trg
-        repo  = (takeWhile (/= '#') $ msg =~ regex_GH_repo)
-        inum  = drop 1 (dropWhile (/= '#') $ msg =~ regex_GH_num)
+issueFinder :: String -> String -> Net ()
+issueFinder trg msg = do
+    allchan <- gets channels
+    let (ch, _) = botPopChan trg allchan
+    let (owner, repo, inum) = parseIssueRequest (head ch) trg msg
+    gl <- io $ glIssueFind inum
+    privMsg trg gl
+    url <- io $ checkIssue owner repo $ read inum
+    if isJust url
+        then privMsg trg $ fromJust url
+        else privMsg trg ("Can't find that issue (" ++ owner ++ "/" ++ repo ++ "#" ++ inum ++ ")")
+
+parseIssueRequest :: Channel -> String -> String -> (String, String, String)
+parseIssueRequest ch trg msg = do
+    let owner = if msg =~ regex_GH_owner
+                    then takeWhile (/= '/') $ msg =~ regex_GH_owner
+                    else if default_rown ch /= "" then default_rown ch else drop 1 trg
+    let repo = if msg =~ regex_GH_repo
+                    then takeWhile (/= '#') $ msg =~ regex_GH_repo
+                    else if default_repo ch /= "" then default_repo ch else drop 1 trg
+    let iss = drop 1 (msg =~ regex_GH_num) :: String
+    (owner, repo, iss)
+
 
 humanTime :: NominalDiffTime -> String
 humanTime td =
@@ -385,13 +394,7 @@ checkIssue :: String -> String -> Int -> IO (Maybe String)
 checkIssue o r inum = do
     possibleIssue <- G.issue owner repo issID
     case possibleIssue of
-        Left _ -> if any (== owner) $ map (G.mkOwnerName . P.pack) enabled_owners
-                    -- Swap once (Hacky)
-                    then return (Nothing)
-                    else case owner of
-                        "toktok" -> checkIssue "utox" r inum
-                        "utox"   -> checkIssue "toktok" r inum
-                        _        -> return (Nothing)
+        Left  _          -> return (Nothing)
         Right real_issue -> realIssue r o inum real_issue
     where
         owner = (G.mkOwnerName (P.pack o))
@@ -414,46 +417,90 @@ realIssue repo_name owner issu_numb issue = do
 ------------------------------------------------
 --  GitLab helpers
 ------------------------------------------------
-gl_ci_token  = ""
-gl_ci_target = ""
+data GitLab_Issue = GitLab_Issue
+    {   iD                      :: Int
+    ,   issueId                 :: Int
+    ,   issueProjectId          :: Int
+    ,   issueTitle              :: String
+    ,   issueDescription        :: String
+    ,   issueLabels             :: [String]
+    -- ,   issueMilestone          :: Maybe Milestone
+    -- ,   issueAssignee           :: Maybe SimpleUser
+    -- ,   issueAuthor             :: SimpleUser
+    ,   issueState              :: String
+    ,   issueUpdatedAt          :: UTCTime
+    ,   issueCreatedAt          :: UTCTime
+    ,   webURL                  :: String
+  } deriving (Show, Generic)
+
+instance FromJSON GitLab_Issue where
+    parseJSON = withObject "GitLab_Issue" $ \o -> GitLab_Issue
+        <$> o .: "id"
+        <*> o .: "iid"
+        <*> o .: "project_id"
+        <*> o .: "title"
+        <*> o .: "description"
+        <*> o .: "labels"
+        <*> o .: "state"
+        <*> o .: "updated_at"
+        <*> o .: "created_at"
+        <*> o .: "web_url"
+
+instance ToJSON   GitLab_Issue
+
+devbot_token = ""
+utox_utox_project_id = "2748139"
+
+glIssueFind :: String -> IO (String)
+glIssueFind i = do
+    (code, body) <- gitlabAPIpull ("https://gitlab.com/api/v3/projects/2748139/issues?iid=" ++ i) [("PRIVATE-TOKEN", devbot_token)]
+
+    putStrLn $ "The status code was: " ++ (show code)
+
+    let list = decode body :: Maybe [GitLab_Issue]
+    if isJust list
+        then do let issue = head (fromJust list)
+                return ("Issue is " ++ issueState issue ++ " " ++ issueTitle issue ++ " " ++ webURL issue)
+        else return ("No Issue Found :<")
 
 ciTriggerGitlab :: String -> IO (Bool)
 ciTriggerGitlab ref = do
-    manager <- newManager tlsManagerSettings
-    initRequest <- parseRequest gl_ci_target
+    let gl_ci_target = "https://gitlab.com/api/v3/projects/2748139/trigger/builds"
+    let gl_ci_token  = ""
+    let d = [("token", gl_ci_token), ("ref", ref)]
+    (code, body) <- gitlabAPIpush gl_ci_target [] d
 
-    let requestText = [("token", CHAR8.pack gl_ci_token), ("ref", CHAR8.pack ref)]
-    let request = urlEncodedBody requestText $ initRequest { method = "POST" }
-    response <- httpLbs request manager
-
-    let code = statusCode $ responseStatus response
-    putStrLn $ LCHAR8.unpack (responseBody response)
+    putStrLn $ LCHAR8.unpack body
     putStrLn $ "The status code was: " ++ (show code)
 
-    let headers = responseHeaders response
-    let res = (lookup "location" headers)
     if code == 201
         then return (True)
         else return (False)
 
-gitlabAPI :: String -> IO (Bool)
-gitlabAPI ref = do
+gitlabAPIpull :: String -> [(CI.CI CHAR8.ByteString, CHAR8.ByteString)] -> IO (Int, LCHAR8.ByteString)
+gitlabAPIpull url hders = do
+    initRequest <- parseRequest url
+    let request = setRequestHeaders hders $ initRequest
+    putStrLn $ show request
     manager <- newManager tlsManagerSettings
-    initRequest <- parseRequest gl_ci_target
-
-    let requestText = [("token", CHAR8.pack gl_ci_token), ("ref", CHAR8.pack ref)]
-    let request = urlEncodedBody requestText $ initRequest { method = "POST" }
-    response <- httpLbs request manager
+    response <- Network.HTTP.Client.httpLbs request manager
 
     let code = statusCode $ responseStatus response
-    putStrLn $ LCHAR8.unpack (responseBody response)
-    putStrLn $ "The status code was: " ++ (show code)
+    let body = responseBody response
+    return (code, body)
 
-    let headers = responseHeaders response
-    let res = (lookup "location" headers)
-    if code == 201
-        then return (True)
-        else return (False)
+gitlabAPIpush :: String -> [(CI.CI CHAR8.ByteString, CHAR8.ByteString)] -> [(String, String)] -> IO (Int, LCHAR8.ByteString)
+gitlabAPIpush url hders rdata = do
+    let p_data = map (\(x, y) -> ((CHAR8.pack x), (CHAR8.pack y))) $ rdata
+    initRequest <- parseRequest url
+    let request = setRequestHeaders hders $ urlEncodedBody p_data initRequest
+    putStrLn $ show request
+    manager <- newManager tlsManagerSettings
+    response <- Network.HTTP.Client.httpLbs request manager
+
+    let code = statusCode $ responseStatus response
+    let body = responseBody response
+    return (code, body)
 
 
 ------------------------------------------------
@@ -470,7 +517,7 @@ githubMkShort url str = do
                       ]
     initRequest <- parseRequest "https://git.io"
     let request = urlEncodedBody requestText $ initRequest { method = "POST" }
-    response <- httpLbs request manager
+    response <- Network.HTTP.Client.httpLbs request manager
     let code = statusCode $ responseStatus response
     putStrLn $ LCHAR8.unpack (responseBody response)
     putStrLn $ "The status code was: " ++ (show code)
