@@ -1,4 +1,6 @@
-__pycache__
-devbot.o
+__pycache__/
+dist/
+
 devbot
-devbot.hi
+devbot.**
+!devbot.hs
