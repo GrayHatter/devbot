@@ -12,7 +12,7 @@ import           Data.List
 import           Data.Maybe
 import           Data.Time.Clock
 import           GHC.Generics                       (Generic)
-import           Network
+import           Network.Connection
 import           Network.HTTP.Simple
 import           Network.HTTP.Client
 import           Network.HTTP.Client.TLS
@@ -37,7 +37,7 @@ import qualified GitHub.Endpoints.Issues.Milestones as G
 
 ournick =   "devbot"
 server  =   "irc.freenode.org"
-port    =   6667
+port    =   7070
 chans   =   [   "#devbot-dev"
             ,   "#utox"
             ,   "#epic_cms"
@@ -52,9 +52,8 @@ regex_GH_owner  = "([a-zA-Z0-9.-]+)/"  ++ regex_GH_repo
 regex_gl        = "((^|\\s)![0-9]{1,5})" :: String
 regex_gli       = "((^|\\s)i[0-9]{1,5})" :: String
 
-
 data Bot = Bot
-    {   socket      :: Handle
+    {   socket      :: Connection
     ,   channels    :: [Channel]
     ,   start_time  :: UTCTime
     }
@@ -80,13 +79,19 @@ data User = User
 main :: IO ()
 main = bracket conn disconnect loop
   where
-    disconnect  = hClose . socket
+    disconnect  = connectionClose . socket
     loop st     = evalStateT run st
 
 conn :: IO Bot
 conn = do
-    irc_conn <- connectTo server $ PortNumber $ Main.port
-    hSetBuffering irc_conn NoBuffering
+    conn_context <- initConnectionContext
+    let sec_settings = (TLSSettingsSimple False False False)
+    irc_conn <- connectTo conn_context $ ConnectionParams
+                                            {   connectionHostname  = server
+                                            ,   connectionPort      = Main.port
+                                            ,   connectionUseSecure = Just sec_settings
+                                            ,   connectionUseSocks  = Nothing
+                                            }
     c <- getCurrentTime
     return (Bot irc_conn [] c)
     where
@@ -102,10 +107,11 @@ run = do
 listen :: Net ()
 listen = forever $ do
     h <- gets socket
-    string <- init `fmap` io (hGetLine h)
+    string <- readLine h
+    -- string <- raw
     -- TODO sanitize utf-8 for the broken version of haskell on debian
     if "PING :" `isPrefixOf` string
-        then io $ hPrintf h "PONG :%s\r\n" string
+        then io $ connectionPut h (CHAR8.pack $ "PONG :" ++ string ++ "\r\n")
         else do io $ putStrLn string
                 eval (source string) (action string) (target string) (message string)
   where
@@ -116,11 +122,16 @@ listen = forever $ do
     target  = takeWhile (/= ' ') . drop 1 . dropWhile (/= ' ') . drop 1 . dropWhile (/= ' ')
     message = drop 1 . dropWhile (/= ':') . drop 1
 
+readLine :: Connection -> Net (String)
+readLine con = do
+    line <- io (connectionGetLine 520 con) -- RFC 2812 says 512 ... but muh padding
+    return (CHAR8.unpack line)
+
 write :: String -> String -> Net ()
 write string text = do
     io $ printf    "> %s %s\n" string text
     h <- gets socket
-    io $ hPrintf h "%s %s\r\n" string text
+    io $ connectionPut h $ CHAR8.pack (string ++ " " ++ text ++ "\r\n")
 
 ------------------------------------------------
 --  Main processor
@@ -175,7 +186,6 @@ evalMention _ _ t msg
     | msg =~ ("what(')?s (next|left)\\?" :: String) = eval "" "" t "!m"
     | msg =~ ("^[Dd]evbot[;:,]? " :: String) = privMsg t "You said my name!! :D"
     | otherwise = return ()
-
 
 botCommand :: String -> String -> String -> String -> Net ()
 botCommand _ _ target "!moose"        = privMsg target "https://www.youtube.com/watch?v=7fE0YhEFvx4"
@@ -459,8 +469,11 @@ glIssueFind i = do
 
     let list = decode body :: Maybe [GitLab_Issue]
     if isJust list
-        then do let issue = head (fromJust list)
-                return ("Issue is " ++ issueState issue ++ " " ++ issueTitle issue ++ " " ++ webURL issue)
+        then do let r_list = fromJust list
+                if null r_list
+                    then return ("No issue found :<")
+                    else do let issue = head r_list
+                            return ("Issue is " ++ issueState issue ++ " " ++ issueTitle issue ++ " " ++ webURL issue)
         else return ("No Issue Found :<")
 
 ciTriggerGitlab :: String -> IO (Bool)

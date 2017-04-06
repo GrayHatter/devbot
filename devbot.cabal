@@ -23,6 +23,7 @@ executable devbot
   build-depends:        base >=4.9 && <4.10
                     ,   aeson
                     ,   bytestring
+                    ,   connection
                     ,   case-insensitive
                     ,   github
                     ,   http-client
