@@ -156,6 +156,10 @@ eval _ _ target "!interject" = do
     privMsg target "There really is a Linux, and these people are using it, but it is just a part of the system they use. Linux is the kernel: the program in the system that allocates the machine's resources to the other programs that you run."
     privMsg target "The kernel is an essential part of an operating system, but useless by itself; it can only function in the context of a complete operating system. Linux is normally used in combination with the GNU operating system: the whole system is basically GNU with Linux added, or GNU/Linux. All the so-called \"Linux\" distributions are really distributions of GNU/Linux."
     chNick  ournick
+eval _ _ target "!tox" = do
+  privMsg target "<@grayhatter> +mannol | we should start a kickstarter campaign to help NSA and CIA protect from these leaks"
+  privMsg target "<@grayhatter> yeah"
+  privMsg target "<@grayhatter> if they had used tox, it never would have leaked :/"
 eval source action target msg
     -- banned phrases
     | "allah is doing" `isInfixOf` msg = kickBan target source
