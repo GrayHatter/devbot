@@ -171,6 +171,7 @@ eval source action target msg
     | msg =~ regex_gli = privMsg target $ "https://gitlab.com/uTox/uTox/issues/"         ++ drop 1 (msg =~ regex_gli)
     -- be funny!
     | "that's wrong!"  `isInfixOf`  msg = privMsg target "OH NO! someone is wrong on the internet! https://xkcd.com/386/"
+    | "shit's fucked" `isInfixOf` msg = privMsg target "https://www.youtube.com/watch?v=HAEZaUYoJRc"
     | otherwise = return ()
 
 gitLabMagic :: String -> String -> Net ()
