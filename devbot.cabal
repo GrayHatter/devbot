@@ -25,6 +25,7 @@ executable devbot
                     ,   bytestring
                     ,   connection
                     ,   case-insensitive
+                    ,   ConfigFile
                     ,   github
                     ,   http-client
                     ,   http-client-tls
